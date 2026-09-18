@@ -65,6 +65,10 @@ This means the two implementations won't produce byte-identical polygons for the
 
 The web app is published via GitHub Pages at `https://synthux-academy.github.io/svg2kicad/`, served straight from the `main` branch root — any push to `main` redeploys automatically, no build step. The repo is public (required for Pages on this org's free plan).
 
+## Git workflow
+
+After making changes in this repo, commit and push to `main` without stopping to ask for confirmation first — the user has explicitly asked for this every time, so no need to re-confirm per change. Since a push to `main` immediately redeploys the live web app (see "Deployment" above), only do this for finished, working changes, not mid-task experiments.
+
 ## Keeping docs in sync
 
 When you add a feature or change behavior (new layer options, a different outline-detection rule, a new clipboard fallback, etc.), update `README.md` (user-facing usage) and this file (architecture/behavior notes) in the same change — don't leave them describing the old behavior.
