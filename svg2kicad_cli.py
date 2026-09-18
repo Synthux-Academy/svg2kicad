@@ -6,8 +6,12 @@ Usage:
     python svg2kicad_cli.py input.svg [output.kicad_pcb]
 
 Rules:
-    cls-2 paths  → Edge.Cuts  (board outline)
+    shape whose id contains "EdgeCuts", or carries the legacy cls-2 class
+                 → Edge.Cuts  (board outline)
     all others   → F.Mask     (solder-mask openings)
+
+svgpathtools converts <polygon>, <polyline>, <rect>, <circle>, and <ellipse>
+elements to paths automatically, so they're handled the same way as <path>.
 
 Compound paths (letter counters: O, B, P, D…) are bridged into ring polygons
 so holes render correctly in KiCad instead of as solid disks.
@@ -83,6 +87,16 @@ def make_ring_polygon(outer_pts, inner_pts):
     return outer_rot + inner_rot
 
 
+def is_edge_path(id_, cls):
+    """A shape is the board outline if its id names it EdgeCuts (current
+    Illustrator "Object IDs -> Layer Names" export), or — for backward
+    compatibility with older files — still carries the old cls-2 class."""
+    norm_id = re.sub(r'[^a-z0-9]', '', (id_ or '').lower())
+    if 'edgecuts' in norm_id:
+        return True
+    return 'cls-2' in (cls or '')
+
+
 def gr_poly(pts, layer, fill_solid=False, width=0.05):
     uid = str(uuid.uuid4())
     xy = '\n'.join(f'      (xy {x} {y})' for x, y in pts)
@@ -153,11 +167,12 @@ def convert(svg_path, out_path):
 
     for path_idx, (path, attr) in enumerate(zip(paths, attrs)):
         cls = attr.get('class', '')
+        id_ = attr.get('id', '')
         if not path:
             skipped += 1
             continue
 
-        if 'cls-2' in cls:
+        if is_edge_path(id_, cls):
             pts = path_to_pts(path)
             if len(pts) >= 2:
                 edge_segs.append(pts)

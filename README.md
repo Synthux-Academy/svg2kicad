@@ -68,11 +68,11 @@ Open the resulting `.kicad_pcb` file directly in KiCad (File → Open).
 
 ## How it works
 
-SVG paths are tessellated into polygons and written as `gr_poly` shapes in the KiCad file:
+SVG shapes — `<path>`, `<polygon>`, `<polyline>`, `<rect>` (including rounded corners), `<circle>`, and `<ellipse>` — are tessellated into polygons and written as `gr_poly` shapes in the KiCad file:
 
-| SVG path class | KiCad layer | Purpose |
+| SVG shape | KiCad layer | Purpose |
 |---|---|---|
-| `cls-2` | Edge.Cuts | Board outline |
+| `id` contains `EdgeCuts`, or (legacy) `class` contains `cls-2` | Edge.Cuts | Board outline |
 | anything else | F.Mask | Solder-mask opening |
 
 **Compound paths** (a single SVG path that contains both an outer boundary and an inner counter-hole, separated by `Z M` in the path data) are detected automatically. The outer and inner contours are bridged into a single ring polygon so KiCad's fill algorithm renders the annular region correctly.

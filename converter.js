@@ -73,6 +73,17 @@ window.Converter = (function () {
     return Math.round(v * 10000) / 10000;
   }
 
+  function dedupePts(pts) {
+    if (!pts.length) return [];
+    const out = [pts[0]];
+    for (let i = 1; i < pts.length; i++) {
+      const p = pts[i];
+      const last = out[out.length - 1];
+      if (p[0] !== last[0] || p[1] !== last[1]) out.push(p);
+    }
+    return out;
+  }
+
   // Single persistent hidden <path>, reused for every sample call.
   // No viewBox/width/height/transform on the wrapper, so getPointAtLength
   // returns the raw `d` coordinates un-rescaled (same assumption the
@@ -120,13 +131,7 @@ window.Converter = (function () {
       pts.push([roundMm(pt.x * SCALE), roundMm(pt.y * SCALE)]);
     }
 
-    const deduped = pts.length ? [pts[0]] : [];
-    for (let i = 1; i < pts.length; i++) {
-      const p = pts[i];
-      const last = deduped[deduped.length - 1];
-      if (p[0] !== last[0] || p[1] !== last[1]) deduped.push(p);
-    }
-    return deduped;
+    return dedupePts(pts);
   }
 
   function bbox(pts) {
@@ -194,6 +199,67 @@ window.Converter = (function () {
       .split(/(?<=[Zz])\s*(?=[Mm])/)
       .map((s) => s.trim())
       .filter(Boolean);
+  }
+
+  const POINTS_NUM_RE = /-?\d*\.?\d+(?:[eE][-+]?\d+)?/g;
+
+  // Parses a <polygon>/<polyline> `points` attribute into mm [x, y] pairs.
+  function parsePointsAttr(pointsStr) {
+    const nums = (pointsStr || '').match(POINTS_NUM_RE);
+    if (!nums) return [];
+    const pts = [];
+    for (let i = 0; i + 1 < nums.length; i += 2) {
+      pts.push([roundMm(Number(nums[i]) * SCALE), roundMm(Number(nums[i + 1]) * SCALE)]);
+    }
+    return dedupePts(pts);
+  }
+
+  function rectToPts(x, y, w, h, rx, ry) {
+    if (w <= 0 || h <= 0) return [];
+    if (rx == null) rx = ry;
+    if (ry == null) ry = rx;
+    if (!rx || !ry) {
+      const corners = [[x, y], [x + w, y], [x + w, y + h], [x, y + h]];
+      return dedupePts(corners.map(([px, py]) => [roundMm(px * SCALE), roundMm(py * SCALE)]));
+    }
+    rx = Math.max(0, Math.min(rx, w / 2));
+    ry = Math.max(0, Math.min(ry, h / 2));
+    const corners = [
+      [x + w - rx, y + ry, 270, 360],
+      [x + w - rx, y + h - ry, 0, 90],
+      [x + rx, y + h - ry, 90, 180],
+      [x + rx, y + ry, 180, 270],
+    ];
+    const nArc = 8;
+    const pts = [];
+    for (const [cx, cy, a0, a1] of corners) {
+      for (let i = 0; i <= nArc; i++) {
+        const t = ((a0 + ((a1 - a0) * i) / nArc) * Math.PI) / 180;
+        pts.push([
+          roundMm((cx + rx * Math.cos(t)) * SCALE),
+          roundMm((cy + ry * Math.sin(t)) * SCALE),
+        ]);
+      }
+    }
+    return dedupePts(pts);
+  }
+
+  function ellipseToPts(cx, cy, rx, ry) {
+    if (rx <= 0 || ry <= 0) return [];
+    const h = (rx - ry) ** 2 / (rx + ry) ** 2;
+    const circumference = Math.PI * (rx + ry) * (1 + (3 * h) / (10 + Math.sqrt(4 - 3 * h)));
+    const lengthMm = circumference * SCALE;
+    let n = Math.round(lengthMm / MM_PER_SAMPLE);
+    n = Math.max(MIN_POINTS, Math.min(MAX_POINTS, n));
+    const pts = [];
+    for (let i = 0; i < n; i++) {
+      const t = (2 * Math.PI * i) / n;
+      pts.push([
+        roundMm((cx + rx * Math.cos(t)) * SCALE),
+        roundMm((cy + ry * Math.sin(t)) * SCALE),
+      ]);
+    }
+    return dedupePts(pts);
   }
 
   // A path is the board outline if its id names it "EdgeCuts" (Illustrator
@@ -274,6 +340,57 @@ window.Converter = (function () {
           maskSegs.push(ringPts);
           ringCount++;
         }
+      }
+    }
+
+    // Basic SVG shape elements: Illustrator emits these instead of <path> for
+    // artwork made only of straight lines, or for native rects/ellipses. They
+    // never have compound subpaths, so there's no ring-bridging to consider.
+    const basicShapeEls = Array.from(doc.querySelectorAll('rect, circle, ellipse, polygon, polyline'));
+
+    for (const el of basicShapeEls) {
+      const id = el.getAttribute('id') || '';
+      const cls = el.getAttribute('class') || '';
+      const tag = el.tagName.toLowerCase();
+      const num = (name) => {
+        const v = el.getAttribute(name);
+        return v ? parseFloat(v) || 0 : 0;
+      };
+
+      let pts;
+      if (tag === 'polygon' || tag === 'polyline') {
+        pts = parsePointsAttr(el.getAttribute('points') || '');
+      } else if (tag === 'rect') {
+        const rxAttr = el.getAttribute('rx');
+        const ryAttr = el.getAttribute('ry');
+        const rx = rxAttr !== null && rxAttr !== '' ? parseFloat(rxAttr) : null;
+        const ry = ryAttr !== null && ryAttr !== '' ? parseFloat(ryAttr) : null;
+        pts = rectToPts(num('x'), num('y'), num('width'), num('height'), rx, ry);
+      } else if (tag === 'circle') {
+        const r = num('r');
+        pts = ellipseToPts(num('cx'), num('cy'), r, r);
+      } else {
+        pts = ellipseToPts(num('cx'), num('cy'), num('rx'), num('ry'));
+      }
+
+      if (isEdgePath(id, cls)) {
+        if (pts.length >= 2) {
+          edgeSegs.push(pts);
+        } else {
+          skipped++;
+        }
+        continue;
+      }
+
+      if (pts.length >= 3) {
+        const { w, h } = bbox(pts);
+        if (w >= MIN_DIM_MM || h >= MIN_DIM_MM) {
+          maskSegs.push(pts);
+        } else {
+          skipped++;
+        }
+      } else {
+        skipped++;
       }
     }
 
