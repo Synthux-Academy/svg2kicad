@@ -211,6 +211,20 @@
     handleFile(file);
   });
 
+  svgPreviewBox.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    svgPreviewBox.classList.add('drag-over');
+  });
+  svgPreviewBox.addEventListener('dragleave', () => {
+    svgPreviewBox.classList.remove('drag-over');
+  });
+  svgPreviewBox.addEventListener('drop', (e) => {
+    e.preventDefault();
+    svgPreviewBox.classList.remove('drag-over');
+    const file = e.dataTransfer.files && e.dataTransfer.files[0];
+    handleFile(file);
+  });
+
   fileInput.addEventListener('change', () => {
     handleFile(fileInput.files && fileInput.files[0]);
   });
