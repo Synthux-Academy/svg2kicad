@@ -1,0 +1,206 @@
+:root {
+  --bg: #f7f7f8;
+  --fg: #1a1a1a;
+  --fg-muted: #6b6b70;
+  --border: #c9c9cf;
+  --accent: #2563eb;
+  --accent-fg: #ffffff;
+  --error: #cc3333;
+  --panel-bg: #ffffff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #16161a;
+    --fg: #eaeaef;
+    --fg-muted: #9c9ca4;
+    --border: #3a3a42;
+    --accent: #5b8cf5;
+    --accent-fg: #0b0b0d;
+    --panel-bg: #1f1f24;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #16161a;
+  --fg: #eaeaef;
+  --fg-muted: #9c9ca4;
+  --border: #3a3a42;
+  --accent: #5b8cf5;
+  --accent-fg: #0b0b0d;
+  --panel-bg: #1f1f24;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+main {
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 32px 16px 64px;
+}
+
+h1 {
+  font-size: 22px;
+  margin: 0 0 4px;
+}
+
+.subtitle {
+  margin: 0 0 24px;
+  color: var(--fg-muted);
+  font-size: 14px;
+}
+
+.drop-zone {
+  border: 2px dashed var(--border);
+  border-radius: 10px;
+  padding: 40px 16px;
+  text-align: center;
+  cursor: pointer;
+  background: var(--panel-bg);
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.drop-zone p {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: 14px;
+}
+
+.drop-zone:hover,
+.drop-zone:focus-visible {
+  border-color: var(--accent);
+}
+
+.drop-zone.drag-over {
+  border-color: var(--accent);
+}
+
+.file-name {
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--fg-muted);
+  word-break: break-all;
+}
+
+.stats-panel {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.stat {
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.stat-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--fg-muted);
+}
+
+.stat-value {
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.controls {
+  margin-top: 24px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.controls label {
+  font-size: 13px;
+  width: 100%;
+  color: var(--fg-muted);
+}
+
+#layerSelect {
+  flex: 1 1 auto;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-bg);
+  color: var(--fg);
+  font-size: 14px;
+}
+
+.link-button {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 4px 0;
+}
+
+.copy-button {
+  width: 100%;
+  padding: 12px;
+  border: none;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.copy-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.copy-status {
+  font-size: 13px;
+  width: 100%;
+  color: var(--fg-muted);
+}
+
+.copy-status.error {
+  color: var(--error);
+}
+
+.clipboard-staging {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.clipboard-staging.visible {
+  position: static;
+  left: auto;
+  width: 100%;
+  height: 160px;
+  opacity: 1;
+  margin-top: 16px;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel-bg);
+  color: var(--fg);
+  font-family: monospace;
+  font-size: 12px;
+}
