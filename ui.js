@@ -27,6 +27,7 @@
   const statSkipped = document.getElementById('statSkipped');
   const controls = document.getElementById('controls');
   const layerSelect = document.getElementById('layerSelect');
+  const scaleInput = document.getElementById('scaleInput');
   const commonLayersGroup = document.getElementById('commonLayers');
   const moreLayersGroup = document.getElementById('moreLayers');
   const moreLayersToggle = document.getElementById('moreLayersToggle');
@@ -61,6 +62,12 @@
     copyBtn.disabled = true;
     clipboardStaging.classList.remove('visible');
     setCopyStatus('', false);
+    scaleInput.value = '1';
+  }
+
+  function getScale() {
+    const v = parseFloat(scaleInput.value);
+    return isFinite(v) && v > 0 ? v : 1;
   }
 
   function handleFile(file) {
@@ -100,7 +107,8 @@
     state.kicadText = window.Converter.renderKicadText(
       state.edgeSegs,
       state.maskSegs,
-      layerSelect.value
+      layerSelect.value,
+      getScale()
     );
   }
 
@@ -130,6 +138,7 @@
   });
 
   layerSelect.addEventListener('change', updateOutput);
+  scaleInput.addEventListener('input', updateOutput);
 
   let moreLayersShown = false;
   moreLayersToggle.addEventListener('click', () => {

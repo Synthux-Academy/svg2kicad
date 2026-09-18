@@ -177,6 +177,11 @@ window.Converter = (function () {
     return outerRot.concat(innerRot);
   }
 
+  function scalePts(pts, scale) {
+    if (scale === 1) return pts;
+    return pts.map(([x, y]) => [roundMm(x * scale), roundMm(y * scale)]);
+  }
+
   function grPoly(pts, layer, fillSolid, width) {
     const uid = uuidv4();
     const xy = pts.map(([x, y]) => `      (xy ${x} ${y})`).join('\n');
@@ -406,13 +411,14 @@ window.Converter = (function () {
     };
   }
 
-  function renderKicadText(edgeSegs, maskSegs, artworkLayer) {
+  function renderKicadText(edgeSegs, maskSegs, artworkLayer, scale) {
+    scale = scale || 1;
     const chunks = [HEADER];
     for (const pts of edgeSegs) {
-      chunks.push(grPoly(pts, 'Edge.Cuts', false, 0.05));
+      chunks.push(grPoly(scalePts(pts, scale), 'Edge.Cuts', false, 0.05));
     }
     for (const pts of maskSegs) {
-      chunks.push(grPoly(pts, artworkLayer, true, 0));
+      chunks.push(grPoly(scalePts(pts, scale), artworkLayer, true, 0));
     }
     chunks.push(')');
     return chunks.join('\n');

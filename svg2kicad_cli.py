@@ -3,7 +3,10 @@
 svg2kicad_cli.py — Convert SVG artwork to KiCad PCB format
 
 Usage:
-    python svg2kicad_cli.py input.svg [output.kicad_pcb]
+    python svg2kicad_cli.py input.svg [output.kicad_pcb] [--scale FACTOR]
+
+    --scale FACTOR   Uniformly scale all output coordinates. Defaults to
+                      1.0 (1:1, no scaling).
 
 Rules:
     shape whose id contains "EdgeCuts", or carries the legacy cls-2 class
@@ -70,6 +73,12 @@ def signed_area(pts):
         j = (i + 1) % n
         a += pts[i][0] * pts[j][1] - pts[j][0] * pts[i][1]
     return a / 2.0
+
+
+def scale_pts(pts, scale):
+    if scale == 1:
+        return pts
+    return [(round(x * scale, 4), round(y * scale, 4)) for x, y in pts]
 
 
 def make_ring_polygon(outer_pts, inner_pts):
@@ -155,7 +164,7 @@ HEADER = '''(kicad_pcb
 '''
 
 
-def convert(svg_path, out_path):
+def convert(svg_path, out_path, scale=1.0):
     paths, attrs, _ = svg2paths2(svg_path)
 
     # Pre-parse raw d attributes for reliable compound-path detection (handles ZM with no space)
@@ -215,9 +224,9 @@ def convert(svg_path, out_path):
 
     chunks = [HEADER]
     for pts in edge_segs:
-        chunks.append(gr_poly(pts, 'Edge.Cuts', fill_solid=False, width=0.05))
+        chunks.append(gr_poly(scale_pts(pts, scale), 'Edge.Cuts', fill_solid=False, width=0.05))
     for pts in mask_segs:
-        chunks.append(gr_poly(pts, 'F.Mask', fill_solid=True, width=0))
+        chunks.append(gr_poly(scale_pts(pts, scale), 'F.Mask', fill_solid=True, width=0))
     chunks.append(')')
 
     with open(out_path, 'w') as f:
@@ -227,7 +236,36 @@ def convert(svg_path, out_path):
     print(f"F.Mask     : {len(mask_segs)}")
     print(f"Ring polys : {ring_count}")
     print(f"Skipped    : {skipped}")
+    print(f"Scale      : {scale}x")
     print(f"Written    : {out_path}  ({os.path.getsize(out_path) / 1024:.1f} KB)")
+
+
+def parse_args(argv):
+    """Splits argv into positional args and a --scale/--scale=N option."""
+    scale = 1.0
+    positional = []
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == '--scale':
+            if i + 1 >= len(argv):
+                print("Error: --scale requires a value")
+                sys.exit(1)
+            value = argv[i + 1]
+            i += 2
+        elif arg.startswith('--scale='):
+            value = arg.split('=', 1)[1]
+            i += 1
+        else:
+            positional.append(arg)
+            i += 1
+            continue
+        try:
+            scale = float(value)
+        except ValueError:
+            print(f"Error: invalid --scale value: {value}")
+            sys.exit(1)
+    return positional, scale
 
 
 if __name__ == '__main__':
@@ -235,14 +273,19 @@ if __name__ == '__main__':
         print(__doc__)
         sys.exit(1)
 
-    svg_in = sys.argv[1]
+    positional, scale = parse_args(sys.argv[1:])
+    if not positional:
+        print(__doc__)
+        sys.exit(1)
+
+    svg_in = positional[0]
     if not os.path.exists(svg_in):
         print(f"Error: file not found: {svg_in}")
         sys.exit(1)
 
-    if len(sys.argv) >= 3:
-        kicad_out = sys.argv[2]
+    if len(positional) >= 2:
+        kicad_out = positional[1]
     else:
         kicad_out = str(Path(svg_in).with_suffix('.kicad_pcb'))
 
-    convert(svg_in, kicad_out)
+    convert(svg_in, kicad_out, scale=scale)

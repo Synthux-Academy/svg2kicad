@@ -144,6 +144,16 @@ h1 {
   font-size: 14px;
 }
 
+.scale-input {
+  width: 90px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-bg);
+  color: var(--fg);
+  font-size: 14px;
+}
+
 .link-button {
   background: none;
   border: none;

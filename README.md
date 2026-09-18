@@ -18,8 +18,9 @@ No install needed — just open [`index.html`](index.html) in a browser (double-
 
 1. Drag an SVG onto the drop zone (or click it to browse).
 2. Pick the KiCad layer the artwork should land on (defaults to F.Mask; click "Show more layers" for the full list).
-3. Click **Copy to Clipboard**.
-4. In KiCad's PCB Editor, click the canvas and paste (Ctrl/Cmd+V) — the outline and artwork appear on the layers you picked.
+3. Optionally set a **Scale** factor (defaults to `1`, i.e. 1:1 — no scaling).
+4. Click **Copy to Clipboard**.
+5. In KiCad's PCB Editor, click the canvas and paste (Ctrl/Cmd+V) — the outline and artwork appear on the layers you picked, scaled as specified.
 
 It's a static page (`index.html` / `styles.css` / `converter.js` / `ui.js`) with no server or build step — the conversion logic runs entirely in the browser.
 
@@ -52,6 +53,12 @@ To specify a custom output path:
 python svg2kicad_cli.py input.svg output.kicad_pcb
 ```
 
+To scale the output (defaults to `1`, i.e. 1:1 — no scaling):
+
+```bash
+python svg2kicad_cli.py input.svg --scale 2
+```
+
 ---
 
 ## Example
@@ -82,5 +89,6 @@ SVG shapes — `<path>`, `<polygon>`, `<polyline>`, `<rect>` (including rounded 
 ## Notes
 
 - SVG units are assumed to be **points** (1 pt = 1/72 inch), which is the default for Illustrator. Scale factor: `25.4 / 72` points → mm.
+- An optional **output scale factor** (CLI: `--scale`; web app: the Scale field, defaults to `1` / 1:1) is applied uniformly to every output coordinate *after* the points→mm conversion above — it resizes the whole board, it isn't a unit correction.
 - Output targets **KiCad format version 20260206** (KiCad 10). KiCad 8/9 will open it with a version warning but work fine.
-- Shapes smaller than 0.02 mm in both dimensions are skipped as degenerate.
+- Shapes smaller than 0.02 mm in both dimensions are skipped as degenerate (this check happens before scaling, at the original SVG size).
