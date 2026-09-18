@@ -16,7 +16,7 @@ There are two ways to use it: a **command-line script** (below) and a **drag-and
 
 No install needed — just open [`index.html`](index.html) in a browser (double-click it, or `open index.html`).
 
-1. Drag an SVG onto the drop zone (or click it to browse).
+1. Drag an SVG onto the drop zone (or click it to browse). A preview of your source artwork, and of the converted KiCad shapes (outline in yellow, artwork filled, holes rendered as holes), appear on the right.
 2. Pick the KiCad layer the artwork should land on (defaults to F.Mask; click "Show more layers" for the full list).
 3. Optionally set a **Scale** factor (defaults to `1`, i.e. 1:1 — no scaling).
 4. Click **Copy to Clipboard**.

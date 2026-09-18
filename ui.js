@@ -15,6 +15,7 @@
     maskSegs: [],
     stats: null,
     kicadText: '',
+    svgPreviewUrl: null,
   };
 
   const dropZone = document.getElementById('dropZone');
@@ -34,6 +35,10 @@
   const copyBtn = document.getElementById('copyBtn');
   const copyStatus = document.getElementById('copyStatus');
   const clipboardStaging = document.getElementById('clipboardStaging');
+  const svgPreviewBox = document.getElementById('svgPreview');
+  const kicadPreviewBox = document.getElementById('kicadPreview');
+  const SVG_PREVIEW_PLACEHOLDER = '<p class="preview-placeholder">Drop an SVG to preview it here.</p>';
+  const KICAD_PREVIEW_PLACEHOLDER = '<p class="preview-placeholder">Converted shapes will appear here.</p>';
 
   function populateLayerSelect() {
     for (const layer of COMMON_LAYERS) {
@@ -63,6 +68,76 @@
     clipboardStaging.classList.remove('visible');
     setCopyStatus('', false);
     scaleInput.value = '1';
+
+    if (state.svgPreviewUrl) {
+      URL.revokeObjectURL(state.svgPreviewUrl);
+      state.svgPreviewUrl = null;
+    }
+    svgPreviewBox.classList.add('empty');
+    svgPreviewBox.innerHTML = SVG_PREVIEW_PLACEHOLDER;
+    kicadPreviewBox.classList.add('empty');
+    kicadPreviewBox.innerHTML = KICAD_PREVIEW_PLACEHOLDER;
+  }
+
+  function showSourcePreview(svgText) {
+    const blob = new Blob([svgText], { type: 'image/svg+xml' });
+    const url = URL.createObjectURL(blob);
+    state.svgPreviewUrl = url;
+
+    const img = document.createElement('img');
+    img.alt = 'SVG preview';
+    img.src = url;
+
+    svgPreviewBox.innerHTML = '';
+    svgPreviewBox.appendChild(img);
+    svgPreviewBox.classList.remove('empty');
+  }
+
+  function showKicadPreview(edgeSegs, maskSegs) {
+    const svgNS = 'http://www.w3.org/2000/svg';
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const pts of edgeSegs.concat(maskSegs)) {
+      for (const [x, y] of pts) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+
+    if (!isFinite(minX)) {
+      kicadPreviewBox.innerHTML = KICAD_PREVIEW_PLACEHOLDER;
+      kicadPreviewBox.classList.add('empty');
+      return;
+    }
+
+    const w = maxX - minX || 1;
+    const h = maxY - minY || 1;
+    const pad = Math.max(w, h) * 0.06;
+    const vbX = minX - pad, vbY = minY - pad, vbW = w + pad * 2, vbH = h + pad * 2;
+
+    const svg = document.createElementNS(svgNS, 'svg');
+    svg.setAttribute('class', 'kicad-preview-svg');
+    svg.setAttribute('viewBox', `${vbX} ${vbY} ${vbW} ${vbH}`);
+    svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+
+    for (const pts of maskSegs) {
+      const poly = document.createElementNS(svgNS, 'polygon');
+      poly.setAttribute('points', pts.map(([x, y]) => `${x},${y}`).join(' '));
+      poly.setAttribute('class', 'kicad-mask-shape');
+      svg.appendChild(poly);
+    }
+    for (const pts of edgeSegs) {
+      const poly = document.createElementNS(svgNS, 'polygon');
+      poly.setAttribute('points', pts.map(([x, y]) => `${x},${y}`).join(' '));
+      poly.setAttribute('class', 'kicad-edge-shape');
+      poly.setAttribute('stroke-width', Math.max(vbW, vbH) * 0.003);
+      svg.appendChild(poly);
+    }
+
+    kicadPreviewBox.innerHTML = '';
+    kicadPreviewBox.appendChild(svg);
+    kicadPreviewBox.classList.remove('empty');
   }
 
   function getScale() {
@@ -96,6 +171,9 @@
       statsPanel.hidden = false;
       controls.hidden = false;
       copyBtn.disabled = false;
+
+      showSourcePreview(text);
+      showKicadPreview(state.edgeSegs, state.maskSegs);
 
       updateOutput();
     }).catch((err) => {
