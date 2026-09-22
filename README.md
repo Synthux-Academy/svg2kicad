@@ -1,5 +1,7 @@
 # svg2kicad — SVG Artwork to KiCad PCB Converter
 
+**[Open the web app →](https://synthux-academy.github.io/svg2kicad/)**
+
 Converts an SVG artwork file into a KiCad PCB file (`.kicad_pcb`).
 
 - The **board outline** becomes the **Edge.Cuts** layer — either an object/layer named `EdgeCuts` in Illustrator (exported with Object IDs → Layer Names), or the older `cls-2` CSS class convention
