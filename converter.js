@@ -174,7 +174,9 @@ window.Converter = (function () {
     }
     const outerRot = outerPts.slice(bestOi).concat(outerPts.slice(0, bestOi));
     const innerRot = innerPts.slice(bestIi).concat(innerPts.slice(0, bestIi));
-    return outerRot.concat(innerRot);
+    // Close each loop back to its start so the bridge is a true zero-width
+    // keyhole (same edge out and back) — lets several holes join cleanly.
+    return outerRot.concat([outerRot[0]], innerRot, [innerRot[0]]);
   }
 
   function scalePts(pts, scale) {
@@ -340,8 +342,16 @@ window.Converter = (function () {
         } else if (candidates.length === 1) {
           maskSegs.push(candidates[0][1]);
         } else {
-          candidates.sort((a, b) => b[0] - a[0]);
-          const ringPts = makeRingPolygon(candidates[0][1], candidates[candidates.length - 1][1]);
+          // Outer = largest |area|; join every other subpath into it
+          // (same-winding islands first, then holes) so letters with
+          // several counters (B, 8, %) keep all their holes.
+          const outer = candidates.reduce((m, c) => (Math.abs(c[0]) > Math.abs(m[0]) ? c : m));
+          const sign = outer[0] >= 0 ? 1 : -1;
+          candidates.sort((a, b) => b[0] * sign - a[0] * sign);
+          let ringPts = candidates[0][1];
+          for (let i = 1; i < candidates.length; i++) {
+            ringPts = makeRingPolygon(ringPts, candidates[i][1]);
+          }
           maskSegs.push(ringPts);
           ringCount++;
         }

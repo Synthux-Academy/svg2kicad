@@ -82,7 +82,7 @@ SVG shapes — `<path>`, `<polygon>`, `<polyline>`, `<rect>` (including rounded 
 | `id` contains `EdgeCuts`, or (legacy) `class` contains `cls-2` | Edge.Cuts | Board outline |
 | anything else | F.Mask | Solder-mask opening |
 
-**Compound paths** (a single SVG path that contains both an outer boundary and an inner counter-hole, separated by `Z M` in the path data) are detected automatically. The outer and inner contours are bridged into a single ring polygon so KiCad's fill algorithm renders the annular region correctly.
+**Compound paths** (a single SVG path that contains an outer boundary and one or more inner counter-holes, separated by `Z M` in the path data) are detected automatically. Every hole is joined to the outer contour by a zero-width bridge, producing a single polygon, so KiCad renders all the holes correctly — including letters with more than one counter, like B or 8.
 
 ---
 

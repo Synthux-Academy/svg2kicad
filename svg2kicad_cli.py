@@ -93,7 +93,9 @@ def make_ring_polygon(outer_pts, inner_pts):
                 best_sq, best_oi, best_ii = sq, oi, ii
     outer_rot = outer_pts[best_oi:] + outer_pts[:best_oi]
     inner_rot = inner_pts[best_ii:] + inner_pts[:best_ii]
-    return outer_rot + inner_rot
+    # Close each loop back to its start so the bridge is a true zero-width
+    # keyhole (same edge out and back) — lets several holes join cleanly.
+    return outer_rot + [outer_rot[0]] + inner_rot + [inner_rot[0]]
 
 
 def is_edge_path(id_, cls):
@@ -217,8 +219,14 @@ def convert(svg_path, out_path, scale=1.0):
                 elif len(candidates) == 1:
                     mask_segs.append(candidates[0][1])
                 else:
-                    candidates.sort(key=lambda x: x[0], reverse=True)
-                    ring_pts = make_ring_polygon(candidates[0][1], candidates[-1][1])
+                    # Outer = largest |area|; join every other subpath into it
+                    # (same-winding islands first, then holes) so letters with
+                    # several counters (B, 8, %) keep all their holes.
+                    sign = 1 if max(candidates, key=lambda x: abs(x[0]))[0] >= 0 else -1
+                    candidates.sort(key=lambda x: x[0] * sign, reverse=True)
+                    ring_pts = candidates[0][1]
+                    for _, pts in candidates[1:]:
+                        ring_pts = make_ring_polygon(ring_pts, pts)
                     mask_segs.append(ring_pts)
                     ring_count += 1
 
