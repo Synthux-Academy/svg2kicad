@@ -141,6 +141,17 @@ body {
   stroke: none;
 }
 
+.kicad-keepout-shape {
+  stroke: #2f6bff;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.kicad-keepout-hatch {
+  fill: none;
+  stroke: #2f6bff;
+}
+
 @media (max-width: 900px) {
   .app {
     flex-direction: column;

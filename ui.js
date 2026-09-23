@@ -96,7 +96,9 @@
     svgPreviewBox.classList.remove('empty');
   }
 
-  function showKicadPreview(edgeSegs, maskSegs) {
+  // keepoutSegs is drawn (hatched, like KiCad's rule areas) only when
+  // non-empty — i.e. only while LED window is on.
+  function showKicadPreview(edgeSegs, maskSegs, keepoutSegs) {
     const svgNS = 'http://www.w3.org/2000/svg';
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const pts of edgeSegs.concat(maskSegs)) {
@@ -130,6 +132,33 @@
       poly.setAttribute('class', 'kicad-mask-shape');
       svg.appendChild(poly);
     }
+    if (keepoutSegs.length) {
+      // Diagonal hatch sized to the view so it reads the same at any board size.
+      const unit = Math.max(vbW, vbH);
+      const gap = unit * 0.012;
+      const defs = document.createElementNS(svgNS, 'defs');
+      const pattern = document.createElementNS(svgNS, 'pattern');
+      pattern.setAttribute('id', 'keepoutHatch');
+      pattern.setAttribute('patternUnits', 'userSpaceOnUse');
+      pattern.setAttribute('width', gap);
+      pattern.setAttribute('height', gap);
+      const line = document.createElementNS(svgNS, 'path');
+      line.setAttribute('d', `M0,${gap} L${gap},0`);
+      line.setAttribute('class', 'kicad-keepout-hatch');
+      line.setAttribute('stroke-width', unit * 0.0025);
+      pattern.appendChild(line);
+      defs.appendChild(pattern);
+      svg.appendChild(defs);
+
+      for (const pts of keepoutSegs) {
+        const poly = document.createElementNS(svgNS, 'polygon');
+        poly.setAttribute('points', pts.map(([x, y]) => `${x},${y}`).join(' '));
+        poly.setAttribute('class', 'kicad-keepout-shape');
+        poly.setAttribute('fill', 'url(#keepoutHatch)');
+        svg.appendChild(poly);
+      }
+    }
+
     for (const pts of edgeSegs) {
       const poly = document.createElementNS(svgNS, 'polygon');
       poly.setAttribute('points', pts.map(([x, y]) => `${x},${y}`).join(' '));
@@ -177,12 +206,21 @@
       copyBtn.disabled = false;
 
       showSourcePreview(text);
-      showKicadPreview(state.edgeSegs, state.maskSegs);
 
       updateOutput();
+      updatePreview();
     }).catch((err) => {
       setCopyStatus('Could not read that file: ' + err.message, true);
     });
+  }
+
+  // Rebuilt on file load and LED-window changes — not on layer/scale changes.
+  function updatePreview() {
+    showKicadPreview(
+      state.edgeSegs,
+      state.maskSegs,
+      ledWindowCheck.checked ? state.keepoutSegs : []
+    );
   }
 
   function updateOutput() {
@@ -241,7 +279,10 @@
 
   layerSelect.addEventListener('change', updateOutput);
   scaleInput.addEventListener('input', updateOutput);
-  ledWindowCheck.addEventListener('change', updateOutput);
+  ledWindowCheck.addEventListener('change', () => {
+    updateOutput();
+    updatePreview();
+  });
   ledWindowSelect.addEventListener('change', updateOutput);
 
   let moreLayersShown = false;

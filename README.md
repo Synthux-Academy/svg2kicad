@@ -21,7 +21,7 @@ No install needed — just open [`index.html`](index.html) in a browser (double-
 
 1. Drag an SVG onto the drop zone (or click it to browse). A preview of your source artwork, and of the converted KiCad shapes (outline in yellow, artwork filled, holes rendered as holes), appear on the right.
 2. Pick the KiCad layer the artwork should land on (defaults to F.Mask; click "Show more layers" for the full list).
-3. Optionally tick **LED window** and pick F.Mask + keep-out, B.Mask + keep-out, or F.Mask + B.Mask + keep-out (this replaces the artwork layer — see [LED window](#led-window) below).
+3. Optionally tick **LED window** and pick F.Mask + keep-out, B.Mask + keep-out, or F.Mask + B.Mask + keep-out (this replaces the artwork layer — see [LED window](#led-window) below). The keep-out zones show in the KiCad preview as hatched blue areas, as in KiCad.
 4. Optionally set a **Scale** factor (defaults to `1`, i.e. 1:1 — no scaling).
 5. Click **Copy to Clipboard**.
 6. In KiCad's PCB Editor, click the canvas and paste (Ctrl/Cmd+V) — the outline and artwork appear on the layers you picked, scaled as specified.
