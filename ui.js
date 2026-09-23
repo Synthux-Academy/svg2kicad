@@ -72,7 +72,8 @@
     clipboardStaging.classList.remove('visible');
     setCopyStatus('', false);
     scaleInput.value = '1';
-    anchorSelect.value = 'none';
+    // Anchor point is intentionally left alone — it's a paste-alignment
+    // preference that should carry over to the next SVG, not per-file state.
 
     if (state.svgPreviewUrl) {
       URL.revokeObjectURL(state.svgPreviewUrl);

@@ -23,7 +23,7 @@ No install needed — just open [`index.html`](index.html) in a browser (double-
 1. Drag an SVG onto the drop zone (or click it to browse). A preview of your source artwork, and of the converted KiCad shapes (outline in yellow, artwork filled, holes rendered as holes), appear on the right.
 2. Pick the KiCad layer the artwork should land on (defaults to F.Mask; click "Show more layers" for the full list).
 3. Optionally tick **LED window / touch pad** and pick F.Mask + keep-out, B.Mask + keep-out, F.Mask + B.Mask + keep-out, Touch pad (F.Cu + F.Mask + keep-out), or Covered touch pad (F.Cu + keep-out) (this replaces the artwork layer — see [LED window](#led-window) below). The keep-out zones show in the KiCad preview as hatched blue areas, and touch-pad copper as hatched copper, as in KiCad.
-4. Optionally pick an **Anchor point** (defaults to None — the SVG's own coordinate origin). Picking one of the nine board-outline positions shifts every output coordinate so that point lands at (0, 0) — see [Anchor point](#anchor-point) below.
+4. Optionally pick an **Anchor point** (defaults to Top-center; your choice carries over across SVG uploads until you change it — pick None for the SVG's own coordinate origin). Picking one of the nine board-outline positions shifts every output coordinate so that point lands at (0, 0) — see [Anchor point](#anchor-point) below.
 5. Optionally set a **Scale** factor (defaults to `1`, i.e. 1:1 — no scaling).
 6. Click **Copy to Clipboard**.
 7. In KiCad's PCB Editor, click the canvas and paste (Ctrl/Cmd+V) — the outline and artwork appear on the layers you picked, scaled as specified, with your chosen anchor point under the cursor.
