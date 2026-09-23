@@ -190,14 +190,15 @@ window.Converter = (function () {
     front: ['F.Mask'],
     back: ['B.Mask'],
     both: ['F.Mask', 'B.Mask'],
+    touch: ['F.Cu', 'F.Mask'], // touch pad: exposed copper, no other copper
   };
 
   // Keep-out always covers both copper layers (light passes through the
   // whole board); the chosen mask layers are listed too, as KiCad does.
   function ledWindowZoneLayers(masks) {
     return ['F.Cu']
-      .concat(masks.filter((m) => m.startsWith('F.')))
-      .concat(['B.Cu'], masks.filter((m) => m.startsWith('B.')));
+      .concat(masks.filter((m) => m.startsWith('F.') && m !== 'F.Cu'))
+      .concat(['B.Cu'], masks.filter((m) => m.startsWith('B.') && m !== 'B.Cu'));
   }
 
   function keepoutZone(pts, layers) {
@@ -466,7 +467,7 @@ window.Converter = (function () {
     };
   }
 
-  // ledWindow: null/undefined (off), 'front', 'back' or 'both'. When set,
+  // ledWindow: null/undefined (off), 'front', 'back', 'both' or 'touch'. When set,
   // it overrides artworkLayer and adds one keep-out zone per keepoutSegs entry.
   function renderKicadText(edgeSegs, maskSegs, artworkLayer, scale, ledWindow, keepoutSegs) {
     scale = scale || 1;

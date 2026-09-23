@@ -4,14 +4,15 @@ svg2kicad_cli.py — Convert SVG artwork to KiCad PCB format
 
 Usage:
     python svg2kicad_cli.py input.svg [output.kicad_pcb] [--scale FACTOR]
-                            [--led-window front|back|both]
+                            [--led-window front|back|both|touch]
 
     --scale FACTOR   Uniformly scale all output coordinates. Defaults to
                       1.0 (1:1, no scaling).
     --led-window M   LED window: write each artwork shape on F.Mask (front),
                       B.Mask (back) or both, plus a copper keep-out zone
                       (F.Cu + B.Cu) with the same outline so an LED can shine
-                      through the board.
+                      through the board. touch = touch pad: F.Cu + F.Mask
+                      plus the same keep-out.
 
 Rules:
     shape whose id contains "EdgeCuts", or carries the legacy cls-2 class
@@ -128,14 +129,15 @@ LED_WINDOW_MASKS = {
     'front': ['F.Mask'],
     'back': ['B.Mask'],
     'both': ['F.Mask', 'B.Mask'],
+    'touch': ['F.Cu', 'F.Mask'],   # touch pad: exposed copper, no other copper
 }
 
 
 def led_window_zone_layers(masks):
     """Keep-out always covers both copper layers (light passes through the
     whole board); the chosen mask layers are listed too, as KiCad does."""
-    layers = ['F.Cu'] + [m for m in masks if m.startswith('F.')]
-    layers += ['B.Cu'] + [m for m in masks if m.startswith('B.')]
+    layers = ['F.Cu'] + [m for m in masks if m.startswith('F.') and m != 'F.Cu']
+    layers += ['B.Cu'] + [m for m in masks if m.startswith('B.') and m != 'B.Cu']
     return layers
 
 
@@ -327,10 +329,10 @@ def parse_args(argv):
                 mode = argv[i + 1]
                 i += 2
             else:
-                print("Error: --led-window requires front, back or both")
+                print("Error: --led-window requires front, back, both or touch")
                 sys.exit(1)
             if mode not in LED_WINDOW_MASKS:
-                print(f"Error: invalid --led-window value: {mode} (use front, back or both)")
+                print(f"Error: invalid --led-window value: {mode} (use front, back, both or touch)")
                 sys.exit(1)
             led_window = mode
             continue
