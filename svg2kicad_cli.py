@@ -34,7 +34,7 @@ named layer wins, so sublayers work too):
     EdgeCuts     → Edge.Cuts  (board outline; older files: legacy cls-2 class)
     TouchCopper  → F.Cu + F.Mask + keep-out  (exposed touch pad)
     TouchBlack   → F.Cu + keep-out           (touch pad under solder mask)
-    LEDWindow    → F.Mask + keep-out         (LED window)
+    LEDWindow    → F.Mask + B.Mask + keep-out  (LED window, clear on both sides)
     all others   → F.Mask, or the --led-window mode if given
 
 svgpathtools converts <polygon>, <polyline>, <rect>, <circle>, and <ellipse>
@@ -254,7 +254,7 @@ LED_WINDOW_MASKS = {
 LAYER_MODES = {
     'TouchCopper': 'touch',    # exposed touch pad
     'TouchBlack': 'covered',   # touch pad under solder mask
-    'LEDWindow': 'front',      # LED window
+    'LEDWindow': 'both',       # LED window: no mask either side, so light gets through
 }
 
 ROLE_ATTR = 'data-svg2kicad-role'

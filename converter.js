@@ -323,7 +323,7 @@ window.Converter = (function () {
   const LAYER_MODES = {
     TouchCopper: 'touch', // exposed touch pad
     TouchBlack: 'covered', // touch pad under solder mask
-    LEDWindow: 'front', // LED window
+    LEDWindow: 'both', // LED window: no mask either side, so light gets through
   };
 
   // Keep-out always covers both copper layers (light passes through the

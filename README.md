@@ -103,7 +103,7 @@ SVG shapes — `<path>`, `<polygon>`, `<polyline>`, `<rect>` (including rounded 
 | `EdgeCuts`, or (legacy) `class` contains `cls-2` | Edge.Cuts | Board outline |
 | `TouchCopper` | F.Cu + F.Mask + keep-out | Exposed touch pad |
 | `TouchBlack` | F.Cu + keep-out | Touch pad under solder mask |
-| `LEDWindow` | F.Mask + keep-out | LED window |
+| `LEDWindow` | F.Mask + B.Mask + keep-out | LED window — no mask or copper on either side, so light from behind the board gets through |
 | anything else | F.Mask (or your chosen layer / LED window mode) | Solder-mask opening |
 
 **Compound paths** (a single SVG path that contains an outer boundary and one or more inner counter-holes, separated by `Z M` in the path data) are detected automatically. Every hole is joined to the outer contour by a zero-width bridge, producing a single polygon, so KiCad renders all the holes correctly — including letters with more than one counter, like B or 8.
