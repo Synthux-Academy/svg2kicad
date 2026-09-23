@@ -43,7 +43,7 @@ Install deps:
     pip install svgpathtools
 """
 
-import uuid, re, sys, os, xml.etree.ElementTree as ET
+import uuid, re, sys, os, math, xml.etree.ElementTree as ET
 from pathlib import Path
 from svgpathtools import svg2paths2, parse_path, Path as SvgPath
 
@@ -84,6 +84,75 @@ def path_to_pts(path, mm_per_sample=0.05):
         if p != deduped[-1]:
             deduped.append(p)
     return deduped
+
+
+def multiply_matrices(m1, m2):
+    a1, b1, c1, d1, e1, f1 = m1
+    a2, b2, c2, d2, e2, f2 = m2
+    return (
+        a1 * a2 + c1 * b2,
+        b1 * a2 + d1 * b2,
+        a1 * c2 + c1 * d2,
+        b1 * c2 + d1 * d2,
+        a1 * e2 + c1 * f2 + e1,
+        b1 * e2 + d1 * f2 + f1,
+    )
+
+
+def parse_transform(s):
+    """Parses an SVG `transform` attribute (translate/rotate/scale/skewX/
+    skewY/matrix, in any combination) into a single 2x3 affine matrix
+    (a, b, c, d, e, f) where x' = a*x + c*y + e, y' = b*x + d*y + f.
+    Illustrator emits this on <rect>/<circle>/<ellipse> (and occasionally
+    <path>) whenever a shape was rotated/moved as a group and the rotation
+    can't be baked into the element's own x/y/width/height attributes."""
+    m = (1, 0, 0, 1, 0, 0)
+    if not s:
+        return m
+    for name, argstr in re.findall(r'(\w+)\s*\(([^)]*)\)', s):
+        args = [float(a) for a in re.split(r'[\s,]+', argstr.strip()) if a]
+        if name == 'matrix':
+            fm = tuple(args) if len(args) == 6 else (1, 0, 0, 1, 0, 0)
+        elif name == 'translate':
+            tx = args[0] if len(args) > 0 else 0
+            ty = args[1] if len(args) > 1 else 0
+            fm = (1, 0, 0, 1, tx, ty)
+        elif name == 'scale':
+            sx = args[0] if len(args) > 0 else 1
+            sy = args[1] if len(args) > 1 else sx
+            fm = (sx, 0, 0, sy, 0, 0)
+        elif name == 'rotate':
+            deg = args[0] if len(args) > 0 else 0
+            rad = math.radians(deg)
+            cos, sin = math.cos(rad), math.sin(rad)
+            rm = (cos, sin, -sin, cos, 0, 0)
+            cx = args[1] if len(args) > 1 else 0
+            cy = args[2] if len(args) > 2 else 0
+            if cx or cy:
+                fm = multiply_matrices(multiply_matrices((1, 0, 0, 1, cx, cy), rm), (1, 0, 0, 1, -cx, -cy))
+            else:
+                fm = rm
+        elif name == 'skewX':
+            fm = (1, 0, math.tan(math.radians(args[0] if args else 0)), 1, 0, 0)
+        elif name == 'skewY':
+            fm = (1, math.tan(math.radians(args[0] if args else 0)), 0, 1, 0, 0)
+        else:
+            fm = (1, 0, 0, 1, 0, 0)
+        m = multiply_matrices(m, fm)
+    return m
+
+
+def is_identity_matrix(m):
+    return m == (1, 0, 0, 1, 0, 0)
+
+
+def apply_transform(pts, m):
+    """pts are already in mm (SCALE applied by the caller); a matrix's e/f
+    translation components are in raw SVG units, so they're scaled to mm
+    here to match, while a/b/c/d (rotation/scale ratios) apply unchanged."""
+    a, b, c, d, e, f = m
+    te, tf = e * SCALE, f * SCALE
+    return [(round(a * x + c * y + te, 4), round(b * x + d * y + tf, 4)) for x, y in pts]
 
 
 def signed_area(pts):
@@ -290,8 +359,13 @@ def convert(svg_path, out_path, scale=1.0, led_window=None, anchor=None):
             skipped += 1
             continue
 
+        t_matrix = parse_transform(attr.get('transform', ''))
+        has_transform = not is_identity_matrix(t_matrix)
+
         if is_edge_path(id_, cls):
             pts = path_to_pts(path)
+            if has_transform:
+                pts = apply_transform(pts, t_matrix)
             if len(pts) >= 2:
                 edge_segs.append(pts)
             else:
@@ -302,6 +376,8 @@ def convert(svg_path, out_path, scale=1.0, led_window=None, anchor=None):
 
             if len(subpaths) <= 1:
                 pts = path_to_pts(path)
+                if has_transform:
+                    pts = apply_transform(pts, t_matrix)
                 if len(pts) >= 3:
                     xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
                     if (max(xs) - min(xs)) >= MIN_DIM_MM or (max(ys) - min(ys)) >= MIN_DIM_MM:
@@ -315,6 +391,8 @@ def convert(svg_path, out_path, scale=1.0, led_window=None, anchor=None):
                 candidates = []
                 for sp in subpaths:
                     pts = path_to_pts(sp)
+                    if has_transform:
+                        pts = apply_transform(pts, t_matrix)
                     if len(pts) < 3:
                         continue
                     xs = [p[0] for p in pts]; ys = [p[1] for p in pts]

@@ -73,6 +73,84 @@ window.Converter = (function () {
     return Math.round(v * 10000) / 10000;
   }
 
+  // Parses an SVG `transform` attribute (translate/rotate/scale/skewX/skewY/
+  // matrix, in any combination) into a single 2x3 affine matrix [a,b,c,d,e,f]
+  // where x' = a*x + c*y + e, y' = b*x + d*y + f. Illustrator emits this on
+  // <rect>/<circle>/<ellipse> (and occasionally <path>) whenever a shape was
+  // rotated/moved as a group and the rotation can't be baked into the
+  // element's own x/y/width/height attributes.
+  function multiplyMatrices(m1, m2) {
+    const [a1, b1, c1, d1, e1, f1] = m1;
+    const [a2, b2, c2, d2, e2, f2] = m2;
+    return [
+      a1 * a2 + c1 * b2,
+      b1 * a2 + d1 * b2,
+      a1 * c2 + c1 * d2,
+      b1 * c2 + d1 * d2,
+      a1 * e2 + c1 * f2 + e1,
+      b1 * e2 + d1 * f2 + f1,
+    ];
+  }
+
+  function parseTransform(str) {
+    let m = [1, 0, 0, 1, 0, 0];
+    if (!str) return m;
+    const re = /(\w+)\s*\(([^)]*)\)/g;
+    let match;
+    while ((match = re.exec(str))) {
+      const name = match[1];
+      const args = match[2].trim().split(/[\s,]+/).filter(Boolean).map(Number);
+      let fm;
+      switch (name) {
+        case 'matrix':
+          fm = args.length === 6 ? args : [1, 0, 0, 1, 0, 0];
+          break;
+        case 'translate':
+          fm = [1, 0, 0, 1, args[0] || 0, args[1] || 0];
+          break;
+        case 'scale': {
+          const sx = args[0] || 1;
+          const sy = args.length > 1 ? args[1] : sx;
+          fm = [sx, 0, 0, sy, 0, 0];
+          break;
+        }
+        case 'rotate': {
+          const rad = ((args[0] || 0) * Math.PI) / 180;
+          const cos = Math.cos(rad), sin = Math.sin(rad);
+          const rm = [cos, sin, -sin, cos, 0, 0];
+          const cx = args[1] || 0, cy = args[2] || 0;
+          fm = (cx || cy)
+            ? multiplyMatrices(multiplyMatrices([1, 0, 0, 1, cx, cy], rm), [1, 0, 0, 1, -cx, -cy])
+            : rm;
+          break;
+        }
+        case 'skewX':
+          fm = [1, 0, Math.tan(((args[0] || 0) * Math.PI) / 180), 1, 0, 0];
+          break;
+        case 'skewY':
+          fm = [1, Math.tan(((args[0] || 0) * Math.PI) / 180), 0, 1, 0, 0];
+          break;
+        default:
+          fm = [1, 0, 0, 1, 0, 0];
+      }
+      m = multiplyMatrices(m, fm);
+    }
+    return m;
+  }
+
+  function isIdentityMatrix(m) {
+    return m[0] === 1 && m[1] === 0 && m[2] === 0 && m[3] === 1 && m[4] === 0 && m[5] === 0;
+  }
+
+  // pts are already in mm (SCALE applied by the caller); a matrix's e/f
+  // translation components are in raw SVG units, so they're scaled to mm
+  // here to match, while a/b/c/d (rotation/scale ratios) apply unchanged.
+  function applyTransform(pts, m) {
+    const [a, b, c, d, e, f] = m;
+    const te = e * SCALE, tf = f * SCALE;
+    return pts.map(([x, y]) => [roundMm(a * x + c * y + te), roundMm(b * x + d * y + tf)]);
+  }
+
   function dedupePts(pts) {
     if (!pts.length) return [];
     const out = [pts[0]];
@@ -381,6 +459,8 @@ window.Converter = (function () {
       const id = el.getAttribute('id') || '';
       const cls = el.getAttribute('class') || '';
       const d = el.getAttribute('d') || '';
+      const tMatrix = parseTransform(el.getAttribute('transform'));
+      const hasTransform = !isIdentityMatrix(tMatrix);
 
       if (!d) {
         skipped++;
@@ -388,7 +468,8 @@ window.Converter = (function () {
       }
 
       if (isEdgePath(id, cls)) {
-        const pts = sampleSubpath(d);
+        let pts = sampleSubpath(d);
+        if (hasTransform) pts = applyTransform(pts, tMatrix);
         if (pts.length >= 2) {
           edgeSegs.push(pts);
         } else {
@@ -400,7 +481,8 @@ window.Converter = (function () {
       const subpaths = splitSubpathsRaw(d);
 
       if (subpaths.length <= 1) {
-        const pts = sampleSubpath(d);
+        let pts = sampleSubpath(d);
+        if (hasTransform) pts = applyTransform(pts, tMatrix);
         if (pts.length >= 3) {
           const { w, h } = bbox(pts);
           if (w >= MIN_DIM_MM || h >= MIN_DIM_MM) {
@@ -415,7 +497,8 @@ window.Converter = (function () {
       } else {
         const candidates = [];
         for (const sp of subpaths) {
-          const pts = sampleSubpath(sp);
+          let pts = sampleSubpath(sp);
+          if (hasTransform) pts = applyTransform(pts, tMatrix);
           if (pts.length < 3) continue;
           const { w, h } = bbox(pts);
           if (w < MIN_DIM_MM && h < MIN_DIM_MM) continue;
@@ -477,6 +560,9 @@ window.Converter = (function () {
       } else {
         pts = ellipseToPts(num('cx'), num('cy'), num('rx'), num('ry'));
       }
+
+      const tMatrix = parseTransform(el.getAttribute('transform'));
+      if (!isIdentityMatrix(tMatrix)) pts = applyTransform(pts, tMatrix);
 
       if (isEdgePath(id, cls)) {
         if (pts.length >= 2) {
