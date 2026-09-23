@@ -270,7 +270,8 @@ h1 {
 }
 
 #layerSelect,
-#ledWindowSelect {
+#ledWindowSelect,
+#anchorSelect {
   flex: 1 1 auto;
   padding: 8px 10px;
   border-radius: 6px;

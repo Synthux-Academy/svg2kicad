@@ -184,6 +184,51 @@ window.Converter = (function () {
     return pts.map(([x, y]) => [roundMm(x * scale), roundMm(y * scale)]);
   }
 
+  // Anchor: shifts every output coordinate so a named point of the board
+  // outline's bounding box (or, with no outline, all artwork's) lands at
+  // (0, 0) — KiCad pastes clipboard content anchored at its own (0, 0), so
+  // this puts that point under the cursor on paste, for lining up with the
+  // rest of a footprint.
+  const ANCHOR_POINTS = {
+    'top-left': ['left', 'top'],
+    'top-center': ['center', 'top'],
+    'top-right': ['right', 'top'],
+    'middle-left': ['left', 'middle'],
+    center: ['center', 'middle'],
+    'middle-right': ['right', 'middle'],
+    'bottom-left': ['left', 'bottom'],
+    'bottom-center': ['center', 'bottom'],
+    'bottom-right': ['right', 'bottom'],
+  };
+
+  // Combined (minX, minY, maxX, maxY) across several point-lists, or null
+  // if there are no points at all.
+  function combinedBBox(segLists) {
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const pts of segLists) {
+      for (const [x, y] of pts) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+    return isFinite(minX) ? { minX, minY, maxX, maxY } : null;
+  }
+
+  // KiCad's Y axis increases downward, same as the SVG/mm space used
+  // throughout this file, so 'top' is the min-Y edge — no flip needed.
+  function anchorXY(box, anchor) {
+    const [xpos, ypos] = ANCHOR_POINTS[anchor];
+    const x = { left: box.minX, center: (box.minX + box.maxX) / 2, right: box.maxX }[xpos];
+    const y = { top: box.minY, middle: (box.minY + box.maxY) / 2, bottom: box.maxY }[ypos];
+    return [x, y];
+  }
+
+  function shiftPts(pts, dx, dy) {
+    return pts.map(([x, y]) => [roundMm(x + dx), roundMm(y + dy)]);
+  }
+
   // LED window: artwork on these mask layers plus a copper keep-out zone
   // with the same outline, so an LED can shine through the board.
   const LED_WINDOW_MASKS = {
@@ -470,8 +515,21 @@ window.Converter = (function () {
 
   // ledWindow: null/undefined (off), 'front', 'back', 'both', 'touch' or 'covered'. When set,
   // it overrides artworkLayer and adds one keep-out zone per keepoutSegs entry.
-  function renderKicadText(edgeSegs, maskSegs, artworkLayer, scale, ledWindow, keepoutSegs) {
+  // anchor: null/undefined/'none' (off) or one of ANCHOR_POINTS's keys — see
+  // anchorXY's doc comment above. Applied at the original size, before
+  // scaling, so the chosen point lands exactly at (0, 0) at any scale.
+  function renderKicadText(edgeSegs, maskSegs, artworkLayer, scale, ledWindow, keepoutSegs, anchor) {
     scale = scale || 1;
+    keepoutSegs = keepoutSegs || [];
+    if (anchor && anchor !== 'none') {
+      const box = combinedBBox(edgeSegs.length ? edgeSegs : edgeSegs.concat(maskSegs));
+      if (box) {
+        const [ax, ay] = anchorXY(box, anchor);
+        edgeSegs = edgeSegs.map((pts) => shiftPts(pts, -ax, -ay));
+        maskSegs = maskSegs.map((pts) => shiftPts(pts, -ax, -ay));
+        keepoutSegs = keepoutSegs.map((pts) => shiftPts(pts, -ax, -ay));
+      }
+    }
     const chunks = [HEADER];
     for (const pts of edgeSegs) {
       chunks.push(grPoly(scalePts(pts, scale), 'Edge.Cuts', false, 0.05));

@@ -5,6 +5,7 @@ svg2kicad_cli.py — Convert SVG artwork to KiCad PCB format
 Usage:
     python svg2kicad_cli.py input.svg [output.kicad_pcb] [--scale FACTOR]
                             [--led-window front|back|both|touch|covered]
+                            [--anchor POSITION]
 
     --scale FACTOR   Uniformly scale all output coordinates. Defaults to
                       1.0 (1:1, no scaling).
@@ -16,6 +17,16 @@ Usage:
                       covered touch pad: F.Cu + the same keep-out, with no
                       F.Mask opening, so solder mask still covers the copper
                       and it's isolated from the board's copper pour.
+    --anchor POS     Shift every output coordinate so that POS — one of
+                      top-left, top-center, top-right, middle-left, center,
+                      middle-right, bottom-left, bottom-center, bottom-right
+                      — of the board outline's bounding box (or, if there's
+                      no Edge.Cuts shape, of all the artwork's bounding box)
+                      lands at (0, 0). Since KiCad pastes clipboard content
+                      anchored at its own (0, 0), this puts that point under
+                      your cursor when you paste, for easy alignment to the
+                      rest of a footprint. Defaults to no shift (the SVG's
+                      own coordinate origin, as before).
 
 Rules:
     shape whose id contains "EdgeCuts", or carries the legacy cls-2 class
@@ -116,6 +127,44 @@ def make_ring_polygon(outer_pts, inner_pts):
     # Close each loop back to its start so the bridge is a true zero-width
     # keyhole (same edge out and back) — lets several holes join cleanly.
     return outer_rot + [outer_rot[0]] + inner_rot + [inner_rot[0]]
+
+
+ANCHOR_POINTS = {
+    'top-left': ('left', 'top'),
+    'top-center': ('center', 'top'),
+    'top-right': ('right', 'top'),
+    'middle-left': ('left', 'middle'),
+    'center': ('center', 'middle'),
+    'middle-right': ('right', 'middle'),
+    'bottom-left': ('left', 'bottom'),
+    'bottom-center': ('center', 'bottom'),
+    'bottom-right': ('right', 'bottom'),
+}
+
+
+def bbox_of(segs):
+    """Combined (minx, miny, maxx, maxy) across a list of point-lists, or
+    None if there are no points at all."""
+    xs = [x for pts in segs for x, _ in pts]
+    ys = [y for pts in segs for _, y in pts]
+    if not xs:
+        return None
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def anchor_xy(box, anchor):
+    """The (x, y) of one of the nine named points of a (minx, miny, maxx,
+    maxy) box. KiCad's Y axis increases downward, same as the SVG/mm space
+    used throughout this file, so 'top' is the min-Y edge, no flip needed."""
+    minx, miny, maxx, maxy = box
+    xpos, ypos = ANCHOR_POINTS[anchor]
+    x = {'left': minx, 'center': (minx + maxx) / 2, 'right': maxx}[xpos]
+    y = {'top': miny, 'middle': (miny + maxy) / 2, 'bottom': maxy}[ypos]
+    return x, y
+
+
+def shift_pts(pts, dx, dy):
+    return [(round(x + dx, 4), round(y + dy, 4)) for x, y in pts]
 
 
 def is_edge_path(id_, cls):
@@ -223,7 +272,7 @@ HEADER = '''(kicad_pcb
 '''
 
 
-def convert(svg_path, out_path, scale=1.0, led_window=None):
+def convert(svg_path, out_path, scale=1.0, led_window=None, anchor=None):
     paths, attrs, _ = svg2paths2(svg_path)
 
     # Pre-parse raw d attributes for reliable compound-path detection (handles ZM with no space)
@@ -290,6 +339,19 @@ def convert(svg_path, out_path, scale=1.0, led_window=None):
                     mask_segs.append(ring_pts)
                     ring_count += 1
 
+    # Anchor: computed at the original SVG size, before scaling, from the
+    # outline's bounding box (or, with no outline, all artwork's), so the
+    # chosen point lands exactly at (0, 0) after scaling regardless of scale.
+    anchor_shift = None
+    if anchor and anchor != 'none':
+        box = bbox_of(edge_segs) or bbox_of(edge_segs + mask_segs)
+        if box:
+            ax, ay = anchor_xy(box, anchor)
+            anchor_shift = (ax, ay)
+            edge_segs = [shift_pts(pts, -ax, -ay) for pts in edge_segs]
+            mask_segs = [shift_pts(pts, -ax, -ay) for pts in mask_segs]
+            keepout_segs = [shift_pts(pts, -ax, -ay) for pts in keepout_segs]
+
     chunks = [HEADER]
     for pts in edge_segs:
         chunks.append(gr_poly(scale_pts(pts, scale), 'Edge.Cuts', fill_solid=False, width=0.05))
@@ -313,14 +375,17 @@ def convert(svg_path, out_path, scale=1.0, led_window=None):
     print(f"Scale      : {scale}x")
     if led_window:
         print(f"LED window : {' + '.join(masks)} + keep-out ({len(keepout_segs)} zones)")
+    if anchor_shift:
+        print(f"Anchor     : {anchor}  (shifted by {-anchor_shift[0]:.4f}, {-anchor_shift[1]:.4f} mm)")
     print(f"Written    : {out_path}  ({os.path.getsize(out_path) / 1024:.1f} KB)")
 
 
 def parse_args(argv):
-    """Splits argv into positional args, a --scale/--scale=N option and a
-    --led-window/--led-window=MODE option."""
+    """Splits argv into positional args, a --scale/--scale=N option, a
+    --led-window/--led-window=MODE option and a --anchor/--anchor=POS option."""
     scale = 1.0
     led_window = None
+    anchor = None
     positional = []
     i = 0
     while i < len(argv):
@@ -340,6 +405,21 @@ def parse_args(argv):
                 sys.exit(1)
             led_window = mode
             continue
+        if arg == '--anchor' or arg.startswith('--anchor='):
+            if '=' in arg:
+                pos = arg.split('=', 1)[1]
+                i += 1
+            elif i + 1 < len(argv):
+                pos = argv[i + 1]
+                i += 2
+            else:
+                print("Error: --anchor requires a position (see --help)")
+                sys.exit(1)
+            if pos != 'none' and pos not in ANCHOR_POINTS:
+                print(f"Error: invalid --anchor value: {pos} (use none or one of {', '.join(ANCHOR_POINTS)})")
+                sys.exit(1)
+            anchor = pos
+            continue
         if arg == '--scale':
             if i + 1 >= len(argv):
                 print("Error: --scale requires a value")
@@ -358,7 +438,7 @@ def parse_args(argv):
         except ValueError:
             print(f"Error: invalid --scale value: {value}")
             sys.exit(1)
-    return positional, scale, led_window
+    return positional, scale, led_window, anchor
 
 
 if __name__ == '__main__':
@@ -366,7 +446,7 @@ if __name__ == '__main__':
         print(__doc__)
         sys.exit(1)
 
-    positional, scale, led_window = parse_args(sys.argv[1:])
+    positional, scale, led_window, anchor = parse_args(sys.argv[1:])
     if not positional:
         print(__doc__)
         sys.exit(1)
@@ -381,4 +461,4 @@ if __name__ == '__main__':
     else:
         kicad_out = str(Path(svg_in).with_suffix('.kicad_pcb'))
 
-    convert(svg_in, kicad_out, scale=scale, led_window=led_window)
+    convert(svg_in, kicad_out, scale=scale, led_window=led_window, anchor=anchor)

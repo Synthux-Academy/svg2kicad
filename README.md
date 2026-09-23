@@ -8,6 +8,7 @@ Converts an SVG artwork file into a KiCad PCB file (`.kicad_pcb`).
 - All **other paths** become openings on your chosen KiCad layer (defaults to **F.Mask**)
 - **Letter shapes** with counter-holes (O, B, P, D…) are handled correctly — holes render as holes in KiCad, not solid disks
 - Optional **LED window** mode: each artwork shape is placed on F.Mask, B.Mask or both, plus a copper **keep-out zone** with the same outline, so an LED behind the board can shine through — or as a **touch pad**, exposed (F.Cu + F.Mask + keep-out) or **covered** under solder mask (F.Cu + keep-out)
+- Optional **anchor point**: shift the whole output so a chosen point of the board outline lands at (0, 0), which is where KiCad anchors pasted content — so pasting drops that point under your cursor, for lining up with the rest of a footprint
 
 Designed for artwork exported from Adobe Illustrator, but works with any SVG that follows the same conventions.
 
@@ -22,9 +23,10 @@ No install needed — just open [`index.html`](index.html) in a browser (double-
 1. Drag an SVG onto the drop zone (or click it to browse). A preview of your source artwork, and of the converted KiCad shapes (outline in yellow, artwork filled, holes rendered as holes), appear on the right.
 2. Pick the KiCad layer the artwork should land on (defaults to F.Mask; click "Show more layers" for the full list).
 3. Optionally tick **LED window / touch pad** and pick F.Mask + keep-out, B.Mask + keep-out, F.Mask + B.Mask + keep-out, Touch pad (F.Cu + F.Mask + keep-out), or Covered touch pad (F.Cu + keep-out) (this replaces the artwork layer — see [LED window](#led-window) below). The keep-out zones show in the KiCad preview as hatched blue areas, and touch-pad copper as hatched copper, as in KiCad.
-4. Optionally set a **Scale** factor (defaults to `1`, i.e. 1:1 — no scaling).
-5. Click **Copy to Clipboard**.
-6. In KiCad's PCB Editor, click the canvas and paste (Ctrl/Cmd+V) — the outline and artwork appear on the layers you picked, scaled as specified.
+4. Optionally pick an **Anchor point** (defaults to None — the SVG's own coordinate origin). Picking one of the nine board-outline positions shifts every output coordinate so that point lands at (0, 0) — see [Anchor point](#anchor-point) below.
+5. Optionally set a **Scale** factor (defaults to `1`, i.e. 1:1 — no scaling).
+6. Click **Copy to Clipboard**.
+7. In KiCad's PCB Editor, click the canvas and paste (Ctrl/Cmd+V) — the outline and artwork appear on the layers you picked, scaled as specified, with your chosen anchor point under the cursor.
 
 It's a static page (`index.html` / `styles.css` / `converter.js` / `ui.js`) with no server or build step — the conversion logic runs entirely in the browser.
 
@@ -69,6 +71,12 @@ To export LED windows (`front` = F.Mask, `back` = B.Mask, `both` = F.Mask + B.Ma
 python svg2kicad_cli.py input.svg --led-window both
 ```
 
+To anchor the output so a point of the board outline lands at (0, 0) — see [Anchor point](#anchor-point):
+
+```bash
+python svg2kicad_cli.py input.svg --anchor bottom-right
+```
+
 ---
 
 ## Example
@@ -102,6 +110,12 @@ With LED window on, every artwork shape is written:
 - as a keep-out rule area (`zone` with `keepout`) on **F.Cu + B.Cu** (plus the chosen mask layers), with tracks, vias, pads and copper pour not allowed and footprints allowed — so no copper blocks the light. For a touch pad (exposed or covered), the keep-out stops tracks and ground pour from running through or under the copper pad, isolating it from the rest of the board's copper (the pad's own F.Cu shape is a graphic, not a track or pour, so it passes DRC); connect the pad to its sense trace yourself in KiCad. A covered touch pad leaves out the F.Mask opening, so solder mask still covers the copper — the pad senses through the mask instead of exposing bare copper.
 
 Letter counters (the inside of an O, B…) keep their holes in the mask, but are filled in the keep-out: an isolated copper island inside a letter would be removed by KiCad's pour anyway. Separate same-path islands (like the dot of an i) each get their own keep-out zone.
+
+### Anchor point
+
+KiCad pastes clipboard content anchored at its own coordinate (0, 0) — whatever point of the pasted geometry sits at (0, 0) is the point that tracks your cursor and gets dropped where you click. By default, that's wherever (0, 0) happened to fall in your SVG's own coordinate space, which is rarely useful for lining artwork up against an existing footprint.
+
+Setting an anchor point shifts every output coordinate (outline, artwork, and any LED-window keep-out zones) by the same amount, so a chosen point of the **board outline's** bounding box — or, if there's no Edge.Cuts shape in the file, of all the artwork's combined bounding box — lands exactly at (0, 0) instead. Pick one of the nine points (the four corners, the four edge midpoints, or the center); CLI: `--anchor top-left` / `--anchor center` / etc. (or `--anchor none`, the default, for no shift); web app: the Anchor point dropdown. The shift is computed before scaling, so the anchor point lands at (0, 0) regardless of the Scale factor.
 
 ---
 

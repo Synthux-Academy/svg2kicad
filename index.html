@@ -58,6 +58,20 @@
           <option value="covered">Covered touch pad: F.Cu + keep-out</option>
         </select>
 
+        <label for="anchorSelect">Anchor point (paste origin)</label>
+        <select id="anchorSelect">
+          <option value="none">None (SVG origin)</option>
+          <option value="top-left">Top-left</option>
+          <option value="top-center">Top-center</option>
+          <option value="top-right">Top-right</option>
+          <option value="middle-left">Middle-left</option>
+          <option value="center">Center</option>
+          <option value="middle-right">Middle-right</option>
+          <option value="bottom-left">Bottom-left</option>
+          <option value="bottom-center">Bottom-center</option>
+          <option value="bottom-right">Bottom-right</option>
+        </select>
+
         <label for="scaleInput">Scale (1 = 1:1)</label>
         <input type="number" id="scaleInput" class="scale-input" value="1" min="0.001" step="any">
 

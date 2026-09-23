@@ -32,6 +32,7 @@
   const scaleInput = document.getElementById('scaleInput');
   const ledWindowCheck = document.getElementById('ledWindowCheck');
   const ledWindowSelect = document.getElementById('ledWindowSelect');
+  const anchorSelect = document.getElementById('anchorSelect');
   const commonLayersGroup = document.getElementById('commonLayers');
   const moreLayersGroup = document.getElementById('moreLayers');
   const moreLayersToggle = document.getElementById('moreLayersToggle');
@@ -71,6 +72,7 @@
     clipboardStaging.classList.remove('visible');
     setCopyStatus('', false);
     scaleInput.value = '1';
+    anchorSelect.value = 'none';
 
     if (state.svgPreviewUrl) {
       URL.revokeObjectURL(state.svgPreviewUrl);
@@ -273,7 +275,8 @@
       layerSelect.value,
       getScale(),
       ledWindow,
-      state.keepoutSegs
+      state.keepoutSegs,
+      anchorSelect.value
     );
   }
 
@@ -318,6 +321,7 @@
 
   layerSelect.addEventListener('change', updateOutput);
   scaleInput.addEventListener('input', updateOutput);
+  anchorSelect.addEventListener('change', updateOutput);
   ledWindowCheck.addEventListener('change', () => {
     updateOutput();
     updatePreview();
