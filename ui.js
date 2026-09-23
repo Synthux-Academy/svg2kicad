@@ -97,9 +97,9 @@
   }
 
   // keepoutSegs is drawn (hatched, like KiCad's rule areas) only when
-  // non-empty — i.e. only while LED window is on. ledWindow === 'touch'
-  // draws maskSegs as copper (hatched, copper-colored) instead of the
-  // usual solder-mask teal, since touch-pad artwork is exposed F.Cu.
+  // non-empty — i.e. only while LED window is on. ledWindow === 'touch' or
+  // 'covered' draws maskSegs as copper (hatched, copper-colored) instead of
+  // the usual solder-mask teal, since that artwork is F.Cu either way.
   function showKicadPreview(edgeSegs, maskSegs, keepoutSegs, ledWindow) {
     const svgNS = 'http://www.w3.org/2000/svg';
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -129,7 +129,7 @@
     svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
 
     const unit = Math.max(vbW, vbH);
-    const isCopper = ledWindow === 'touch';
+    const isCopper = ledWindow === 'touch' || ledWindow === 'covered';
     let defs = null;
     const getDefs = () => {
       if (!defs) {

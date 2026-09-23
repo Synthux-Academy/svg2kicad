@@ -191,6 +191,7 @@ window.Converter = (function () {
     back: ['B.Mask'],
     both: ['F.Mask', 'B.Mask'],
     touch: ['F.Cu', 'F.Mask'], // touch pad: exposed copper, no other copper
+    covered: ['F.Cu'], // covered touch pad: copper stays under solder mask
   };
 
   // Keep-out always covers both copper layers (light passes through the
@@ -467,7 +468,7 @@ window.Converter = (function () {
     };
   }
 
-  // ledWindow: null/undefined (off), 'front', 'back', 'both' or 'touch'. When set,
+  // ledWindow: null/undefined (off), 'front', 'back', 'both', 'touch' or 'covered'. When set,
   // it overrides artworkLayer and adds one keep-out zone per keepoutSegs entry.
   function renderKicadText(edgeSegs, maskSegs, artworkLayer, scale, ledWindow, keepoutSegs) {
     scale = scale || 1;

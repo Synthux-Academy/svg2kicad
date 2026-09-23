@@ -4,7 +4,7 @@ svg2kicad_cli.py — Convert SVG artwork to KiCad PCB format
 
 Usage:
     python svg2kicad_cli.py input.svg [output.kicad_pcb] [--scale FACTOR]
-                            [--led-window front|back|both|touch]
+                            [--led-window front|back|both|touch|covered]
 
     --scale FACTOR   Uniformly scale all output coordinates. Defaults to
                       1.0 (1:1, no scaling).
@@ -12,7 +12,10 @@ Usage:
                       B.Mask (back) or both, plus a copper keep-out zone
                       (F.Cu + B.Cu) with the same outline so an LED can shine
                       through the board. touch = touch pad: F.Cu + F.Mask
-                      plus the same keep-out.
+                      plus the same keep-out (exposed copper). covered =
+                      covered touch pad: F.Cu + the same keep-out, with no
+                      F.Mask opening, so solder mask still covers the copper
+                      and it's isolated from the board's copper pour.
 
 Rules:
     shape whose id contains "EdgeCuts", or carries the legacy cls-2 class
@@ -130,6 +133,7 @@ LED_WINDOW_MASKS = {
     'back': ['B.Mask'],
     'both': ['F.Mask', 'B.Mask'],
     'touch': ['F.Cu', 'F.Mask'],   # touch pad: exposed copper, no other copper
+    'covered': ['F.Cu'],           # covered touch pad: copper stays under solder mask
 }
 
 
@@ -329,10 +333,10 @@ def parse_args(argv):
                 mode = argv[i + 1]
                 i += 2
             else:
-                print("Error: --led-window requires front, back, both or touch")
+                print("Error: --led-window requires front, back, both, touch or covered")
                 sys.exit(1)
             if mode not in LED_WINDOW_MASKS:
-                print(f"Error: invalid --led-window value: {mode} (use front, back, both or touch)")
+                print(f"Error: invalid --led-window value: {mode} (use front, back, both, touch or covered)")
                 sys.exit(1)
             led_window = mode
             continue
