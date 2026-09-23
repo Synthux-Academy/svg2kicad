@@ -141,6 +141,20 @@ body {
   stroke: none;
 }
 
+.kicad-copper-shape {
+  stroke: #8a5a2b;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.kicad-copper-hatch-bg {
+  fill: #c8874a;
+}
+
+.kicad-copper-hatch-line {
+  stroke: #8a5a2b;
+}
+
 .kicad-keepout-shape {
   stroke: #2f6bff;
   stroke-width: 1;

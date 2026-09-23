@@ -97,8 +97,10 @@
   }
 
   // keepoutSegs is drawn (hatched, like KiCad's rule areas) only when
-  // non-empty — i.e. only while LED window is on.
-  function showKicadPreview(edgeSegs, maskSegs, keepoutSegs) {
+  // non-empty — i.e. only while LED window is on. ledWindow === 'touch'
+  // draws maskSegs as copper (hatched, copper-colored) instead of the
+  // usual solder-mask teal, since touch-pad artwork is exposed F.Cu.
+  function showKicadPreview(edgeSegs, maskSegs, keepoutSegs, ledWindow) {
     const svgNS = 'http://www.w3.org/2000/svg';
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const pts of edgeSegs.concat(maskSegs)) {
@@ -126,17 +128,53 @@
     svg.setAttribute('viewBox', `${vbX} ${vbY} ${vbW} ${vbH}`);
     svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
 
+    const unit = Math.max(vbW, vbH);
+    const isCopper = ledWindow === 'touch';
+    let defs = null;
+    const getDefs = () => {
+      if (!defs) {
+        defs = document.createElementNS(svgNS, 'defs');
+        svg.appendChild(defs);
+      }
+      return defs;
+    };
+
+    if (isCopper) {
+      // Copper artwork: solid copper-orange background + diagonal hatch,
+      // echoing KiCad's own hatched rendering of copper fills.
+      const gap = unit * 0.012;
+      const pattern = document.createElementNS(svgNS, 'pattern');
+      pattern.setAttribute('id', 'copperHatch');
+      pattern.setAttribute('patternUnits', 'userSpaceOnUse');
+      pattern.setAttribute('width', gap);
+      pattern.setAttribute('height', gap);
+      const bg = document.createElementNS(svgNS, 'rect');
+      bg.setAttribute('width', gap);
+      bg.setAttribute('height', gap);
+      bg.setAttribute('class', 'kicad-copper-hatch-bg');
+      pattern.appendChild(bg);
+      const line = document.createElementNS(svgNS, 'path');
+      line.setAttribute('d', `M0,${gap} L${gap},0`);
+      line.setAttribute('class', 'kicad-copper-hatch-line');
+      line.setAttribute('stroke-width', unit * 0.0025);
+      pattern.appendChild(line);
+      getDefs().appendChild(pattern);
+    }
+
     for (const pts of maskSegs) {
       const poly = document.createElementNS(svgNS, 'polygon');
       poly.setAttribute('points', pts.map(([x, y]) => `${x},${y}`).join(' '));
-      poly.setAttribute('class', 'kicad-mask-shape');
+      if (isCopper) {
+        poly.setAttribute('class', 'kicad-copper-shape');
+        poly.setAttribute('fill', 'url(#copperHatch)');
+      } else {
+        poly.setAttribute('class', 'kicad-mask-shape');
+      }
       svg.appendChild(poly);
     }
     if (keepoutSegs.length) {
       // Diagonal hatch sized to the view so it reads the same at any board size.
-      const unit = Math.max(vbW, vbH);
       const gap = unit * 0.012;
-      const defs = document.createElementNS(svgNS, 'defs');
       const pattern = document.createElementNS(svgNS, 'pattern');
       pattern.setAttribute('id', 'keepoutHatch');
       pattern.setAttribute('patternUnits', 'userSpaceOnUse');
@@ -147,8 +185,7 @@
       line.setAttribute('class', 'kicad-keepout-hatch');
       line.setAttribute('stroke-width', unit * 0.0025);
       pattern.appendChild(line);
-      defs.appendChild(pattern);
-      svg.appendChild(defs);
+      getDefs().appendChild(pattern);
 
       for (const pts of keepoutSegs) {
         const poly = document.createElementNS(svgNS, 'polygon');
@@ -216,10 +253,12 @@
 
   // Rebuilt on file load and LED-window changes — not on layer/scale changes.
   function updatePreview() {
+    const ledWindow = ledWindowCheck.checked ? ledWindowSelect.value : null;
     showKicadPreview(
       state.edgeSegs,
       state.maskSegs,
-      ledWindowCheck.checked ? state.keepoutSegs : []
+      ledWindow ? state.keepoutSegs : [],
+      ledWindow
     );
   }
 
@@ -283,7 +322,10 @@
     updateOutput();
     updatePreview();
   });
-  ledWindowSelect.addEventListener('change', updateOutput);
+  ledWindowSelect.addEventListener('change', () => {
+    updateOutput();
+    updatePreview();
+  });
 
   let moreLayersShown = false;
   moreLayersToggle.addEventListener('click', () => {
