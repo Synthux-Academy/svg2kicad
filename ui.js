@@ -202,7 +202,11 @@
       return `url(#${id})`;
     };
 
-    for (const g of groups) {
+    // Covered copper (under solder mask) goes underneath, since on the board
+    // any exposed copper or window over it is what shows.
+    const drawOrder = groups.filter((g) => g.mode === 'covered')
+      .concat(groups.filter((g) => g.mode !== 'covered'));
+    for (const g of drawOrder) {
       const style = MODE_STYLES[g.mode] || { cls: 'kicad-mask-shape' };
       for (const pts of g.maskSegs) {
         const poly = document.createElementNS(svgNS, 'polygon');

@@ -36,6 +36,8 @@ named layer wins, so sublayers work too):
     TouchBlack   → F.Cu + keep-out           (touch pad under solder mask)
     LEDWindow    → F.Mask + B.Mask + keep-out  (LED window, clear on both sides)
     all others   → F.Mask, or the --led-window mode if given
+Hidden layers and shapes (display:none or visibility:hidden, e.g. a layer
+hidden in Illustrator) are ignored entirely, whatever their name.
 
 svgpathtools converts <polygon>, <polyline>, <rect>, <circle>, and <ellipse>
 elements to paths automatically, so they're handled the same way as <path>.
@@ -258,7 +260,73 @@ LAYER_MODES = {
 }
 
 ROLE_ATTR = 'data-svg2kicad-role'
+HIDDEN = 'hidden'   # ROLE_ATTR value for a shape that isn't rendered
 SHAPE_TAGS = ('path', 'polyline', 'polygon', 'line', 'ellipse', 'circle', 'rect')
+
+
+def style_decls(text):
+    """display/visibility from a CSS declaration list ("a: b; c: d")."""
+    out = {}
+    for part in (text or '').split(';'):
+        prop, sep, value = part.partition(':')
+        prop = prop.strip().lower()
+        if sep and prop in ('display', 'visibility'):
+            out[prop] = value.lower().replace('!important', '').strip()
+    return out
+
+
+def style_rules(doc):
+    """Class -> {prop: (value, rule order)} for the display/visibility rules
+    in the SVG's <style> blocks — Illustrator's Internal CSS export hides a
+    layer with a class rule like `.st19 { display: none; }`. Only simple
+    .class selectors are read; a later rule beats an earlier one, as in CSS."""
+    css = ''.join(
+        n.data for st in doc.getElementsByTagName('style') for n in st.childNodes
+        if n.nodeType in (n.TEXT_NODE, n.CDATA_SECTION_NODE))
+    css = re.sub(r'/\*.*?\*/', '', css, flags=re.S)
+    rules = {}
+    for order, (selectors, body) in enumerate(re.findall(r'([^{}]+)\{([^{}]*)\}', css)):
+        decls = style_decls(body)
+        for sel in selectors.split(','):
+            sel = sel.strip()
+            if re.fullmatch(r'\.[\w-]+', sel, re.ASCII):
+                for prop, value in decls.items():
+                    rules.setdefault(sel[1:], {})[prop] = (value, order)
+    return rules
+
+
+def declared(node, prop, rules):
+    """A node's own display/visibility, CSS-style: inline style beats a class
+    rule, which beats the presentation attribute. None if it sets neither."""
+    value = style_decls(node.getAttribute('style')).get(prop)
+    if value:
+        return value
+    best = None
+    for cls in node.getAttribute('class').split():
+        rule = rules.get(cls, {}).get(prop)
+        if rule and (best is None or rule[1] > best[1]):
+            best = rule
+    if best:
+        return best[0]
+    return node.getAttribute(prop).strip().lower() or None
+
+
+def is_hidden(el, rules):
+    """True if the shape isn't rendered: display:none on it or any ancestor
+    (how Illustrator exports a hidden layer), or an inherited visibility of
+    hidden/collapse (the nearest explicit value wins, as in CSS)."""
+    node = el
+    while node is not None and node.nodeType == node.ELEMENT_NODE:
+        if declared(node, 'display', rules) == 'none':
+            return True
+        node = node.parentNode
+    node = el
+    while node is not None and node.nodeType == node.ELEMENT_NODE:
+        value = declared(node, 'visibility', rules)
+        if value and value != 'inherit':
+            return value in ('hidden', 'collapse')
+        node = node.parentNode
+    return False
 
 
 def norm_id(id_):
@@ -293,12 +361,16 @@ def shape_role(el):
 def tag_shape_roles(svg_path):
     """svg2paths2 flattens the document, dropping each shape's parent groups,
     so every shape's role is worked out on the DOM first and carried through
-    svg2paths2 as an extra attribute (ROLE_ATTR). Only tags — the geometry
-    still comes from svg2paths2 alone."""
+    svg2paths2 as an extra attribute (ROLE_ATTR) — HIDDEN for a shape that
+    isn't rendered, which is checked before any layer name. Only tags — the
+    geometry still comes from svg2paths2 alone, and hidden shapes are marked
+    rather than removed so path indices keep lining up with convert()'s raw
+    d list."""
     doc = minidom.parse(svg_path)
+    rules = style_rules(doc)
     for tag in SHAPE_TAGS:
         for el in doc.getElementsByTagName(tag):
-            role = shape_role(el)
+            role = HIDDEN if is_hidden(el, rules) else shape_role(el)
             if role:
                 el.setAttribute(ROLE_ATTR, role)
     return io.StringIO(doc.toxml())
@@ -405,6 +477,8 @@ def convert(svg_path, out_path, scale=1.0, led_window=None, anchor=None):
 
     for path_idx, (path, attr) in enumerate(zip(paths, attrs)):
         role = attr.get(ROLE_ATTR)
+        if role == HIDDEN:
+            continue
         if not path:
             skipped += 1
             continue

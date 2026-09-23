@@ -465,6 +465,74 @@ window.Converter = (function () {
     return null;
   }
 
+  // display/visibility from a CSS declaration list ("a: b; c: d").
+  function styleDecls(text) {
+    const out = {};
+    for (const part of (text || '').split(';')) {
+      const i = part.indexOf(':');
+      if (i < 0) continue;
+      const prop = part.slice(0, i).trim().toLowerCase();
+      if (prop === 'display' || prop === 'visibility') {
+        out[prop] = part.slice(i + 1).toLowerCase().replace('!important', '').trim();
+      }
+    }
+    return out;
+  }
+
+  // Class -> { prop: [value, rule order] } for the display/visibility rules
+  // in the SVG's <style> blocks — Illustrator's Internal CSS export hides a
+  // layer with a class rule like `.st19 { display: none; }`. Only simple
+  // .class selectors are read; a later rule beats an earlier one, as in CSS.
+  // (The parsed document is never rendered, so getComputedStyle can't help,
+  // and putting untrusted SVG into the live page isn't an option.)
+  function styleRules(doc) {
+    const css = Array.from(doc.querySelectorAll('style'), (s) => s.textContent)
+      .join('')
+      .replace(/\/\*[\s\S]*?\*\//g, '');
+    const rules = new Map();
+    const ruleRe = /([^{}]+)\{([^{}]*)\}/g;
+    let m;
+    for (let order = 0; (m = ruleRe.exec(css)); order++) {
+      const decls = styleDecls(m[2]);
+      for (const sel of m[1].split(',')) {
+        const s = sel.trim();
+        if (!/^\.[\w-]+$/.test(s)) continue;
+        if (!rules.has(s.slice(1))) rules.set(s.slice(1), {});
+        for (const prop in decls) rules.get(s.slice(1))[prop] = [decls[prop], order];
+      }
+    }
+    return rules;
+  }
+
+  // A node's own display/visibility, CSS-style: inline style beats a class
+  // rule, which beats the presentation attribute. null if it sets neither.
+  function declared(node, prop, rules) {
+    const inline = styleDecls(node.getAttribute('style'))[prop];
+    if (inline) return inline;
+    let best = null;
+    for (const cls of (node.getAttribute('class') || '').split(/\s+/)) {
+      const rule = rules.has(cls) ? rules.get(cls)[prop] : null;
+      if (rule && (!best || rule[1] > best[1])) best = rule;
+    }
+    if (best) return best[0];
+    return (node.getAttribute(prop) || '').trim().toLowerCase() || null;
+  }
+
+  // True if the shape isn't rendered: display:none on it or any ancestor
+  // (how Illustrator exports a hidden layer), or an inherited visibility of
+  // hidden/collapse (the nearest explicit value wins, as in CSS). Hidden
+  // shapes are dropped entirely, before any layer name is looked at.
+  function isHidden(el, rules) {
+    for (let node = el; node && node.nodeType === 1; node = node.parentNode) {
+      if (declared(node, 'display', rules) === 'none') return true;
+    }
+    for (let node = el; node && node.nodeType === 1; node = node.parentNode) {
+      const value = declared(node, 'visibility', rules);
+      if (value && value !== 'inherit') return value === 'hidden' || value === 'collapse';
+    }
+    return false;
+  }
+
   function parseSvg(svgText) {
     const doc = new DOMParser().parseFromString(svgText, 'image/svg+xml');
     if (doc.querySelector('parsererror')) {
@@ -482,10 +550,12 @@ window.Converter = (function () {
       layerSegs[name] = { mode: LAYER_MODES[name], maskSegs: [], keepoutSegs: [] };
     }
     const otherSegs = { maskSegs, keepoutSegs };
+    const hidingRules = styleRules(doc);
     let skipped = 0;
     let ringCount = 0;
 
     for (const el of pathEls) {
+      if (isHidden(el, hidingRules)) continue;
       const role = shapeRole(el);
       const d = el.getAttribute('d') || '';
       const tMatrix = parseTransform(el.getAttribute('transform'));
@@ -567,6 +637,7 @@ window.Converter = (function () {
     const basicShapeEls = Array.from(doc.querySelectorAll('rect, circle, ellipse, polygon, polyline'));
 
     for (const el of basicShapeEls) {
+      if (isHidden(el, hidingRules)) continue;
       const role = shapeRole(el);
       const tag = el.tagName.toLowerCase();
       const num = (name) => {
