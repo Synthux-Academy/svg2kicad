@@ -13,6 +13,7 @@
   const state = {
     edgeSegs: [],
     maskSegs: [],
+    keepoutSegs: [],
     stats: null,
     kicadText: '',
     svgPreviewUrl: null,
@@ -29,6 +30,8 @@
   const controls = document.getElementById('controls');
   const layerSelect = document.getElementById('layerSelect');
   const scaleInput = document.getElementById('scaleInput');
+  const ledWindowCheck = document.getElementById('ledWindowCheck');
+  const ledWindowSelect = document.getElementById('ledWindowSelect');
   const commonLayersGroup = document.getElementById('commonLayers');
   const moreLayersGroup = document.getElementById('moreLayers');
   const moreLayersToggle = document.getElementById('moreLayersToggle');
@@ -162,6 +165,7 @@
 
       state.edgeSegs = result.edgeSegs;
       state.maskSegs = result.maskSegs;
+      state.keepoutSegs = result.keepoutSegs;
       state.stats = result.stats;
 
       statEdge.textContent = result.stats.edgeCount;
@@ -182,11 +186,17 @@
   }
 
   function updateOutput() {
+    // LED window replaces the artwork layer with its own mask layers.
+    const ledWindow = ledWindowCheck.checked ? ledWindowSelect.value : null;
+    ledWindowSelect.hidden = !ledWindow;
+    layerSelect.disabled = !!ledWindow;
     state.kicadText = window.Converter.renderKicadText(
       state.edgeSegs,
       state.maskSegs,
       layerSelect.value,
-      getScale()
+      getScale(),
+      ledWindow,
+      state.keepoutSegs
     );
   }
 
@@ -231,6 +241,8 @@
 
   layerSelect.addEventListener('change', updateOutput);
   scaleInput.addEventListener('input', updateOutput);
+  ledWindowCheck.addEventListener('change', updateOutput);
+  ledWindowSelect.addEventListener('change', updateOutput);
 
   let moreLayersShown = false;
   moreLayersToggle.addEventListener('click', () => {

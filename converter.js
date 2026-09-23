@@ -184,6 +184,42 @@ window.Converter = (function () {
     return pts.map(([x, y]) => [roundMm(x * scale), roundMm(y * scale)]);
   }
 
+  // LED window: artwork on these mask layers plus a copper keep-out zone
+  // with the same outline, so an LED can shine through the board.
+  const LED_WINDOW_MASKS = {
+    front: ['F.Mask'],
+    back: ['B.Mask'],
+    both: ['F.Mask', 'B.Mask'],
+  };
+
+  // Keep-out always covers both copper layers (light passes through the
+  // whole board); the chosen mask layers are listed too, as KiCad does.
+  function ledWindowZoneLayers(masks) {
+    return ['F.Cu']
+      .concat(masks.filter((m) => m.startsWith('F.')))
+      .concat(['B.Cu'], masks.filter((m) => m.startsWith('B.')));
+  }
+
+  function keepoutZone(pts, layers) {
+    const uid = uuidv4();
+    const xy = pts.map(([x, y]) => `        (xy ${x} ${y})`).join('\n');
+    const layerList = layers.map((l) => '"' + l + '"').join(' ');
+    return (
+      '  (zone\n' +
+      '    (layers ' + layerList + ')\n' +
+      '    (uuid "' + uid + '")\n' +
+      '    (hatch edge 0.5)\n' +
+      '    (connect_pads (clearance 0))\n' +
+      '    (min_thickness 0.25)\n' +
+      '    (keepout (tracks not_allowed) (vias not_allowed) (pads not_allowed)' +
+      ' (copperpour not_allowed) (footprints allowed))\n' +
+      '    (placement (enabled no) (sheetname ""))\n' +
+      '    (fill (thermal_gap 0.5) (thermal_bridge_width 0.5) (island_removal_mode 1))\n' +
+      '    (polygon\n      (pts\n' + xy + '\n      )\n    )\n' +
+      '  )'
+    );
+  }
+
   function grPoly(pts, layer, fillSolid, width) {
     const uid = uuidv4();
     const xy = pts.map(([x, y]) => `      (xy ${x} ${y})`).join('\n');
@@ -290,6 +326,7 @@ window.Converter = (function () {
 
     const edgeSegs = [];
     const maskSegs = [];
+    const keepoutSegs = []; // hole-free contours for LED-window keep-out zones
     let skipped = 0;
     let ringCount = 0;
 
@@ -321,6 +358,7 @@ window.Converter = (function () {
           const { w, h } = bbox(pts);
           if (w >= MIN_DIM_MM || h >= MIN_DIM_MM) {
             maskSegs.push(pts);
+            keepoutSegs.push(pts);
           } else {
             skipped++;
           }
@@ -341,6 +379,7 @@ window.Converter = (function () {
           skipped++;
         } else if (candidates.length === 1) {
           maskSegs.push(candidates[0][1]);
+          keepoutSegs.push(candidates[0][1]);
         } else {
           // Outer = largest |area|; join every other subpath into it
           // (same-winding islands first, then holes) so letters with
@@ -348,6 +387,10 @@ window.Converter = (function () {
           const outer = candidates.reduce((m, c) => (Math.abs(c[0]) > Math.abs(m[0]) ? c : m));
           const sign = outer[0] >= 0 ? 1 : -1;
           candidates.sort((a, b) => b[0] * sign - a[0] * sign);
+          // Keep-out = outer + same-winding islands, holes filled.
+          for (const c of candidates) {
+            if (c[0] * sign > 0) keepoutSegs.push(c[1]);
+          }
           let ringPts = candidates[0][1];
           for (let i = 1; i < candidates.length; i++) {
             ringPts = makeRingPolygon(ringPts, candidates[i][1]);
@@ -401,6 +444,7 @@ window.Converter = (function () {
         const { w, h } = bbox(pts);
         if (w >= MIN_DIM_MM || h >= MIN_DIM_MM) {
           maskSegs.push(pts);
+          keepoutSegs.push(pts);
         } else {
           skipped++;
         }
@@ -412,6 +456,7 @@ window.Converter = (function () {
     return {
       edgeSegs,
       maskSegs,
+      keepoutSegs,
       stats: {
         edgeCount: edgeSegs.length,
         maskCount: maskSegs.length,
@@ -421,14 +466,25 @@ window.Converter = (function () {
     };
   }
 
-  function renderKicadText(edgeSegs, maskSegs, artworkLayer, scale) {
+  // ledWindow: null/undefined (off), 'front', 'back' or 'both'. When set,
+  // it overrides artworkLayer and adds one keep-out zone per keepoutSegs entry.
+  function renderKicadText(edgeSegs, maskSegs, artworkLayer, scale, ledWindow, keepoutSegs) {
     scale = scale || 1;
     const chunks = [HEADER];
     for (const pts of edgeSegs) {
       chunks.push(grPoly(scalePts(pts, scale), 'Edge.Cuts', false, 0.05));
     }
-    for (const pts of maskSegs) {
-      chunks.push(grPoly(scalePts(pts, scale), artworkLayer, true, 0));
+    const masks = ledWindow ? LED_WINDOW_MASKS[ledWindow] : [artworkLayer];
+    for (const layer of masks) {
+      for (const pts of maskSegs) {
+        chunks.push(grPoly(scalePts(pts, scale), layer, true, 0));
+      }
+    }
+    if (ledWindow) {
+      const zoneLayers = ledWindowZoneLayers(masks);
+      for (const pts of keepoutSegs || []) {
+        chunks.push(keepoutZone(scalePts(pts, scale), zoneLayers));
+      }
     }
     chunks.push(')');
     return chunks.join('\n');

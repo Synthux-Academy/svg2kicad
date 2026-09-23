@@ -4,9 +4,14 @@ svg2kicad_cli.py — Convert SVG artwork to KiCad PCB format
 
 Usage:
     python svg2kicad_cli.py input.svg [output.kicad_pcb] [--scale FACTOR]
+                            [--led-window front|back|both]
 
     --scale FACTOR   Uniformly scale all output coordinates. Defaults to
                       1.0 (1:1, no scaling).
+    --led-window M   LED window: write each artwork shape on F.Mask (front),
+                      B.Mask (back) or both, plus a copper keep-out zone
+                      (F.Cu + B.Cu) with the same outline so an LED can shine
+                      through the board.
 
 Rules:
     shape whose id contains "EdgeCuts", or carries the legacy cls-2 class
@@ -75,6 +80,17 @@ def signed_area(pts):
     return a / 2.0
 
 
+def split_by_winding(candidates):
+    """Orders (area, pts) candidates outer-first (largest |area|, then
+    same-winding islands, then holes) and returns (ordered, islands), where
+    islands are the outer contour plus same-winding islands — i.e. the
+    shape with its holes filled."""
+    sign = 1 if max(candidates, key=lambda x: abs(x[0]))[0] >= 0 else -1
+    ordered = sorted(candidates, key=lambda x: x[0] * sign, reverse=True)
+    islands = [pts for area, pts in ordered if area * sign > 0]
+    return ordered, islands
+
+
 def scale_pts(pts, scale):
     if scale == 1:
         return pts
@@ -106,6 +122,41 @@ def is_edge_path(id_, cls):
     if 'edgecuts' in norm_id:
         return True
     return 'cls-2' in (cls or '')
+
+
+LED_WINDOW_MASKS = {
+    'front': ['F.Mask'],
+    'back': ['B.Mask'],
+    'both': ['F.Mask', 'B.Mask'],
+}
+
+
+def led_window_zone_layers(masks):
+    """Keep-out always covers both copper layers (light passes through the
+    whole board); the chosen mask layers are listed too, as KiCad does."""
+    layers = ['F.Cu'] + [m for m in masks if m.startswith('F.')]
+    layers += ['B.Cu'] + [m for m in masks if m.startswith('B.')]
+    return layers
+
+
+def keepout_zone(pts, layers):
+    uid = str(uuid.uuid4())
+    xy = '\n'.join(f'        (xy {x} {y})' for x, y in pts)
+    layer_list = ' '.join(f'"{l}"' for l in layers)
+    return (
+        f'  (zone\n'
+        f'    (layers {layer_list})\n'
+        f'    (uuid "{uid}")\n'
+        f'    (hatch edge 0.5)\n'
+        f'    (connect_pads (clearance 0))\n'
+        f'    (min_thickness 0.25)\n'
+        f'    (keepout (tracks not_allowed) (vias not_allowed) (pads not_allowed)'
+        f' (copperpour not_allowed) (footprints allowed))\n'
+        f'    (placement (enabled no) (sheetname ""))\n'
+        f'    (fill (thermal_gap 0.5) (thermal_bridge_width 0.5) (island_removal_mode 1))\n'
+        f'    (polygon\n      (pts\n{xy}\n      )\n    )\n'
+        f'  )'
+    )
 
 
 def gr_poly(pts, layer, fill_solid=False, width=0.05):
@@ -166,7 +217,7 @@ HEADER = '''(kicad_pcb
 '''
 
 
-def convert(svg_path, out_path, scale=1.0):
+def convert(svg_path, out_path, scale=1.0, led_window=None):
     paths, attrs, _ = svg2paths2(svg_path)
 
     # Pre-parse raw d attributes for reliable compound-path detection (handles ZM with no space)
@@ -174,6 +225,7 @@ def convert(svg_path, out_path, scale=1.0):
     _raw_d = [p.get('d', '') for p in _ET_paths]
 
     edge_segs, mask_segs = [], []
+    keepout_segs = []   # hole-free contours for LED-window keep-out zones
     skipped = ring_count = 0
 
     for path_idx, (path, attr) in enumerate(zip(paths, attrs)):
@@ -199,6 +251,7 @@ def convert(svg_path, out_path, scale=1.0):
                     xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
                     if (max(xs) - min(xs)) >= MIN_DIM_MM or (max(ys) - min(ys)) >= MIN_DIM_MM:
                         mask_segs.append(pts)
+                        keepout_segs.append(pts)
                     else:
                         skipped += 1
                 else:
@@ -218,12 +271,13 @@ def convert(svg_path, out_path, scale=1.0):
                     skipped += 1
                 elif len(candidates) == 1:
                     mask_segs.append(candidates[0][1])
+                    keepout_segs.append(candidates[0][1])
                 else:
                     # Outer = largest |area|; join every other subpath into it
                     # (same-winding islands first, then holes) so letters with
                     # several counters (B, 8, %) keep all their holes.
-                    sign = 1 if max(candidates, key=lambda x: abs(x[0]))[0] >= 0 else -1
-                    candidates.sort(key=lambda x: x[0] * sign, reverse=True)
+                    candidates, islands = split_by_winding(candidates)
+                    keepout_segs.extend(islands)
                     ring_pts = candidates[0][1]
                     for _, pts in candidates[1:]:
                         ring_pts = make_ring_polygon(ring_pts, pts)
@@ -233,8 +287,14 @@ def convert(svg_path, out_path, scale=1.0):
     chunks = [HEADER]
     for pts in edge_segs:
         chunks.append(gr_poly(scale_pts(pts, scale), 'Edge.Cuts', fill_solid=False, width=0.05))
-    for pts in mask_segs:
-        chunks.append(gr_poly(scale_pts(pts, scale), 'F.Mask', fill_solid=True, width=0))
+    masks = LED_WINDOW_MASKS[led_window] if led_window else ['F.Mask']
+    for layer in masks:
+        for pts in mask_segs:
+            chunks.append(gr_poly(scale_pts(pts, scale), layer, fill_solid=True, width=0))
+    if led_window:
+        zone_layers = led_window_zone_layers(masks)
+        for pts in keepout_segs:
+            chunks.append(keepout_zone(scale_pts(pts, scale), zone_layers))
     chunks.append(')')
 
     with open(out_path, 'w') as f:
@@ -245,16 +305,35 @@ def convert(svg_path, out_path, scale=1.0):
     print(f"Ring polys : {ring_count}")
     print(f"Skipped    : {skipped}")
     print(f"Scale      : {scale}x")
+    if led_window:
+        print(f"LED window : {' + '.join(masks)} + keep-out ({len(keepout_segs)} zones)")
     print(f"Written    : {out_path}  ({os.path.getsize(out_path) / 1024:.1f} KB)")
 
 
 def parse_args(argv):
-    """Splits argv into positional args and a --scale/--scale=N option."""
+    """Splits argv into positional args, a --scale/--scale=N option and a
+    --led-window/--led-window=MODE option."""
     scale = 1.0
+    led_window = None
     positional = []
     i = 0
     while i < len(argv):
         arg = argv[i]
+        if arg == '--led-window' or arg.startswith('--led-window='):
+            if '=' in arg:
+                mode = arg.split('=', 1)[1]
+                i += 1
+            elif i + 1 < len(argv):
+                mode = argv[i + 1]
+                i += 2
+            else:
+                print("Error: --led-window requires front, back or both")
+                sys.exit(1)
+            if mode not in LED_WINDOW_MASKS:
+                print(f"Error: invalid --led-window value: {mode} (use front, back or both)")
+                sys.exit(1)
+            led_window = mode
+            continue
         if arg == '--scale':
             if i + 1 >= len(argv):
                 print("Error: --scale requires a value")
@@ -273,7 +352,7 @@ def parse_args(argv):
         except ValueError:
             print(f"Error: invalid --scale value: {value}")
             sys.exit(1)
-    return positional, scale
+    return positional, scale, led_window
 
 
 if __name__ == '__main__':
@@ -281,7 +360,7 @@ if __name__ == '__main__':
         print(__doc__)
         sys.exit(1)
 
-    positional, scale = parse_args(sys.argv[1:])
+    positional, scale, led_window = parse_args(sys.argv[1:])
     if not positional:
         print(__doc__)
         sys.exit(1)
@@ -296,4 +375,4 @@ if __name__ == '__main__':
     else:
         kicad_out = str(Path(svg_in).with_suffix('.kicad_pcb'))
 
-    convert(svg_in, kicad_out, scale=scale)
+    convert(svg_in, kicad_out, scale=scale, led_window=led_window)

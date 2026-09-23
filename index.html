@@ -46,6 +46,16 @@
         </select>
         <button type="button" id="moreLayersToggle" class="link-button">Show more layers</button>
 
+        <label class="checkbox-label" for="ledWindowCheck">
+          <input type="checkbox" id="ledWindowCheck">
+          LED window (mask + copper keep-out)
+        </label>
+        <select id="ledWindowSelect" hidden>
+          <option value="front">F.Mask + keep-out</option>
+          <option value="back">B.Mask + keep-out</option>
+          <option value="both">F.Mask + B.Mask + keep-out</option>
+        </select>
+
         <label for="scaleInput">Scale (1 = 1:1)</label>
         <input type="number" id="scaleInput" class="scale-input" value="1" min="0.001" step="any">
 

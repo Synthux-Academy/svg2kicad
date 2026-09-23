@@ -244,7 +244,8 @@ h1 {
   color: var(--fg-muted);
 }
 
-#layerSelect {
+#layerSelect,
+#ledWindowSelect {
   flex: 1 1 auto;
   padding: 8px 10px;
   border-radius: 6px;
@@ -252,6 +253,18 @@ h1 {
   background: var(--panel-bg);
   color: var(--fg);
   font-size: 14px;
+}
+
+#layerSelect:disabled {
+  opacity: 0.5;
+}
+
+.controls .checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg);
+  cursor: pointer;
 }
 
 .scale-input {
