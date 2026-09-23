@@ -104,6 +104,15 @@ body {
   border-color: var(--accent);
 }
 
+.svg-drop-box {
+  cursor: pointer;
+}
+
+.svg-drop-box:hover,
+.svg-drop-box:focus-visible {
+  border-color: var(--accent);
+}
+
 .preview-placeholder {
   margin: 0;
   padding: 0 24px;
@@ -155,15 +164,23 @@ body {
   stroke: #8a5a2b;
 }
 
-.kicad-keepout-shape {
-  stroke: #2f6bff;
+.kicad-covered-shape {
+  stroke: #8c8c8c;
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
 }
 
-.kicad-keepout-hatch {
-  fill: none;
-  stroke: #2f6bff;
+.kicad-covered-hatch-bg {
+  fill: #000000;
+}
+
+.kicad-covered-hatch-line {
+  stroke: #8c8c8c;
+}
+
+.kicad-led-window-shape {
+  fill: #fff2a8;
+  stroke: none;
 }
 
 @media (max-width: 900px) {
@@ -192,31 +209,6 @@ h1 {
   margin: 0 0 24px;
   color: var(--fg-muted);
   font-size: 14px;
-}
-
-.drop-zone {
-  border: 2px dashed var(--border);
-  border-radius: 10px;
-  padding: 40px 16px;
-  text-align: center;
-  cursor: pointer;
-  background: var(--panel-bg);
-  transition: border-color 0.15s, background 0.15s;
-}
-
-.drop-zone p {
-  margin: 0;
-  color: var(--fg-muted);
-  font-size: 14px;
-}
-
-.drop-zone:hover,
-.drop-zone:focus-visible {
-  border-color: var(--accent);
-}
-
-.drop-zone.drag-over {
-  border-color: var(--accent);
 }
 
 .file-name {
@@ -337,6 +329,36 @@ h1 {
 
 .copy-status.error {
   color: var(--error);
+}
+
+.how-to {
+  margin-top: 28px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+}
+
+.how-to h2 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.how-to ol,
+.how-to ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.how-to li {
+  margin-top: 4px;
+}
+
+.how-to code {
+  color: var(--fg);
+  font-size: 12px;
 }
 
 .clipboard-staging {

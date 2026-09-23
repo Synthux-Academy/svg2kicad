@@ -20,7 +20,6 @@
     svgPreviewUrl: null,
   };
 
-  const dropZone = document.getElementById('dropZone');
   const fileInput = document.getElementById('fileInput');
   const fileNameEl = document.getElementById('fileName');
   const statsPanel = document.getElementById('statsPanel');
@@ -43,7 +42,7 @@
   const clipboardStaging = document.getElementById('clipboardStaging');
   const svgPreviewBox = document.getElementById('svgPreview');
   const kicadPreviewBox = document.getElementById('kicadPreview');
-  const SVG_PREVIEW_PLACEHOLDER = '<p class="preview-placeholder">Drop an SVG to preview it here.</p>';
+  const SVG_PREVIEW_PLACEHOLDER = '<p class="preview-placeholder">Drag an SVG here, or click to browse</p>';
   const KICAD_PREVIEW_PLACEHOLDER = '<p class="preview-placeholder">Converted shapes will appear here.</p>';
 
   function populateLayerSelect() {
@@ -125,17 +124,26 @@
     statMaskLabel.textContent = any ? 'Other artwork' : 'Artwork shapes';
   }
 
-  // groups: [{ mode, maskSegs, keepoutSegs }] — the other artwork (mode =
-  // the LED-window setting, keepoutSegs empty while it's off) plus each
-  // named layer. A group in 'touch' or 'covered' mode is drawn as copper
-  // (hatched, copper-colored) instead of the usual solder-mask teal, since
-  // that artwork is F.Cu either way; keep-outs are drawn hatched on top,
-  // like KiCad's rule areas.
+  // Preview look per LED-window mode, so each part reads as what it is on
+  // the board: touch (TouchCopper) = exposed copper, covered (TouchBlack) =
+  // copper under solder mask, black with gray hatch, front/back/both
+  // (LEDWindow) = LED window, light yellow. Artwork with no mode keeps the
+  // solder-mask teal (.kicad-mask-shape).
+  const MODE_STYLES = {
+    touch: { cls: 'kicad-copper-shape', hatch: 'copper' },
+    covered: { cls: 'kicad-covered-shape', hatch: 'covered' },
+    front: { cls: 'kicad-led-window-shape' },
+    back: { cls: 'kicad-led-window-shape' },
+    both: { cls: 'kicad-led-window-shape' },
+  };
+
+  // groups: [{ mode, maskSegs }] — the other artwork (mode = the LED-window
+  // setting) plus each named layer, each drawn in its MODE_STYLES look.
+  // Keep-outs aren't drawn: each keep-out mode already has its own look,
+  // and a hatch overlay would cover it.
   function showKicadPreview(edgeSegs, groups) {
     const svgNS = 'http://www.w3.org/2000/svg';
-    const isCopperMode = (mode) => mode === 'touch' || mode === 'covered';
     const artworkSegs = [].concat(...groups.map((g) => g.maskSegs));
-    const keepoutSegs = [].concat(...groups.map((g) => g.keepoutSegs));
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const pts of edgeSegs.concat(artworkSegs)) {
       for (const [x, y] of pts) {
@@ -163,71 +171,44 @@
     svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
 
     const unit = Math.max(vbW, vbH);
-    let defs = null;
-    const getDefs = () => {
-      if (!defs) {
-        defs = document.createElementNS(svgNS, 'defs');
-        svg.appendChild(defs);
+    const defs = document.createElementNS(svgNS, 'defs');
+    svg.appendChild(defs);
+    // Diagonal hatch sized to the view so it reads the same at any board
+    // size, echoing KiCad's own hatched rendering of copper fills: a solid
+    // background plus one line, colored by CSS (.kicad-<name>-hatch-bg/-line).
+    const hatchIds = new Set();
+    const hatchFill = (name) => {
+      const id = name + 'Hatch';
+      if (!hatchIds.has(id)) {
+        hatchIds.add(id);
+        const gap = unit * 0.012;
+        const pattern = document.createElementNS(svgNS, 'pattern');
+        pattern.setAttribute('id', id);
+        pattern.setAttribute('patternUnits', 'userSpaceOnUse');
+        pattern.setAttribute('width', gap);
+        pattern.setAttribute('height', gap);
+        const bg = document.createElementNS(svgNS, 'rect');
+        bg.setAttribute('width', gap);
+        bg.setAttribute('height', gap);
+        bg.setAttribute('class', `kicad-${name}-hatch-bg`);
+        pattern.appendChild(bg);
+        const line = document.createElementNS(svgNS, 'path');
+        line.setAttribute('d', `M0,${gap} L${gap},0`);
+        line.setAttribute('class', `kicad-${name}-hatch-line`);
+        line.setAttribute('stroke-width', unit * 0.0025);
+        pattern.appendChild(line);
+        defs.appendChild(pattern);
       }
-      return defs;
+      return `url(#${id})`;
     };
 
-    if (groups.some((g) => isCopperMode(g.mode) && g.maskSegs.length)) {
-      // Copper artwork: solid copper-orange background + diagonal hatch,
-      // echoing KiCad's own hatched rendering of copper fills.
-      const gap = unit * 0.012;
-      const pattern = document.createElementNS(svgNS, 'pattern');
-      pattern.setAttribute('id', 'copperHatch');
-      pattern.setAttribute('patternUnits', 'userSpaceOnUse');
-      pattern.setAttribute('width', gap);
-      pattern.setAttribute('height', gap);
-      const bg = document.createElementNS(svgNS, 'rect');
-      bg.setAttribute('width', gap);
-      bg.setAttribute('height', gap);
-      bg.setAttribute('class', 'kicad-copper-hatch-bg');
-      pattern.appendChild(bg);
-      const line = document.createElementNS(svgNS, 'path');
-      line.setAttribute('d', `M0,${gap} L${gap},0`);
-      line.setAttribute('class', 'kicad-copper-hatch-line');
-      line.setAttribute('stroke-width', unit * 0.0025);
-      pattern.appendChild(line);
-      getDefs().appendChild(pattern);
-    }
-
     for (const g of groups) {
-      const isCopper = isCopperMode(g.mode);
+      const style = MODE_STYLES[g.mode] || { cls: 'kicad-mask-shape' };
       for (const pts of g.maskSegs) {
         const poly = document.createElementNS(svgNS, 'polygon');
         poly.setAttribute('points', pts.map(([x, y]) => `${x},${y}`).join(' '));
-        if (isCopper) {
-          poly.setAttribute('class', 'kicad-copper-shape');
-          poly.setAttribute('fill', 'url(#copperHatch)');
-        } else {
-          poly.setAttribute('class', 'kicad-mask-shape');
-        }
-        svg.appendChild(poly);
-      }
-    }
-    if (keepoutSegs.length) {
-      // Diagonal hatch sized to the view so it reads the same at any board size.
-      const gap = unit * 0.012;
-      const pattern = document.createElementNS(svgNS, 'pattern');
-      pattern.setAttribute('id', 'keepoutHatch');
-      pattern.setAttribute('patternUnits', 'userSpaceOnUse');
-      pattern.setAttribute('width', gap);
-      pattern.setAttribute('height', gap);
-      const line = document.createElementNS(svgNS, 'path');
-      line.setAttribute('d', `M0,${gap} L${gap},0`);
-      line.setAttribute('class', 'kicad-keepout-hatch');
-      line.setAttribute('stroke-width', unit * 0.0025);
-      pattern.appendChild(line);
-      getDefs().appendChild(pattern);
-
-      for (const pts of keepoutSegs) {
-        const poly = document.createElementNS(svgNS, 'polygon');
-        poly.setAttribute('points', pts.map(([x, y]) => `${x},${y}`).join(' '));
-        poly.setAttribute('class', 'kicad-keepout-shape');
-        poly.setAttribute('fill', 'url(#keepoutHatch)');
+        poly.setAttribute('class', style.cls);
+        if (style.hatch) poly.setAttribute('fill', hatchFill(style.hatch));
         svg.appendChild(poly);
       }
     }
@@ -292,11 +273,7 @@
   // Rebuilt on file load and LED-window changes — not on layer/scale changes.
   function updatePreview() {
     const ledWindow = ledWindowCheck.checked ? ledWindowSelect.value : null;
-    const other = {
-      mode: ledWindow,
-      maskSegs: state.maskSegs,
-      keepoutSegs: ledWindow ? state.keepoutSegs : [],
-    };
+    const other = { mode: ledWindow, maskSegs: state.maskSegs };
     showKicadPreview(state.edgeSegs, [other].concat(Object.values(state.layerSegs)));
   }
 
@@ -317,27 +294,15 @@
     );
   }
 
-  dropZone.addEventListener('click', () => fileInput.click());
-  dropZone.addEventListener('keydown', (e) => {
+  // The SVG source panel is the only file target: drop an SVG on it, or
+  // click it (Enter/Space when focused) to browse.
+  svgPreviewBox.addEventListener('click', () => fileInput.click());
+  svgPreviewBox.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       fileInput.click();
     }
   });
-  dropZone.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    dropZone.classList.add('drag-over');
-  });
-  dropZone.addEventListener('dragleave', () => {
-    dropZone.classList.remove('drag-over');
-  });
-  dropZone.addEventListener('drop', (e) => {
-    e.preventDefault();
-    dropZone.classList.remove('drag-over');
-    const file = e.dataTransfer.files && e.dataTransfer.files[0];
-    handleFile(file);
-  });
-
   svgPreviewBox.addEventListener('dragover', (e) => {
     e.preventDefault();
     svgPreviewBox.classList.add('drag-over');

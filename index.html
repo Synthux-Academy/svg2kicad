@@ -12,11 +12,6 @@
       <h1>SVG → KiCad</h1>
       <p class="subtitle">Drop an SVG, pick a layer, copy, then paste (Ctrl/Cmd+V) into KiCad's PCB editor.</p>
 
-      <div id="dropZone" class="drop-zone" tabindex="0">
-        <p id="dropZoneText">Drag an SVG here, or click to browse</p>
-        <input type="file" id="fileInput" accept=".svg,image/svg+xml" hidden>
-      </div>
-
       <div id="fileName" class="file-name" hidden></div>
 
       <div id="statsPanel" class="stats-panel" hidden>
@@ -80,14 +75,32 @@
       </div>
 
       <textarea id="clipboardStaging" class="clipboard-staging" readonly></textarea>
+
+      <section class="how-to">
+        <h2>How it works</h2>
+        <ol>
+          <li>In Illustrator, put each part on its own layer, named:
+            <ul>
+              <li><code>EdgeCuts</code> – board outline</li>
+              <li><code>TouchCopper</code> – touch pad, exposed copper (F.Cu + F.Mask + keep-out)</li>
+              <li><code>TouchBlack</code> – touch pad under solder mask (F.Cu + keep-out)</li>
+              <li><code>LEDWindow</code> – LED window (F.Mask + keep-out)</li>
+            </ul>
+            Artwork on any other layer uses the Artwork layer setting (F.Mask by default).
+          </li>
+          <li>Export as SVG with Object IDs set to Layer Names.</li>
+          <li>Drop the SVG on the SVG source panel (or click it to browse), check the KiCad preview, then copy and paste into KiCad's PCB editor (Ctrl/Cmd+V).</li>
+        </ol>
+      </section>
     </aside>
 
     <section class="preview">
       <div class="preview-panel">
         <h2 class="preview-title">SVG source</h2>
-        <div id="svgPreview" class="preview-box empty">
-          <p class="preview-placeholder">Drop an SVG to preview it here.</p>
+        <div id="svgPreview" class="preview-box svg-drop-box empty" tabindex="0">
+          <p class="preview-placeholder">Drag an SVG here, or click to browse</p>
         </div>
+        <input type="file" id="fileInput" accept=".svg,image/svg+xml" hidden>
       </div>
       <div class="preview-panel">
         <h2 class="preview-title">KiCad shapes</h2>
