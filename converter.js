@@ -317,6 +317,15 @@ window.Converter = (function () {
     covered: ['F.Cu'], // covered touch pad: copper stays under solder mask
   };
 
+  // Illustrator layer names that fix a shape's layers whatever the global
+  // layer / LED-window settings say, each mapped to a LED_WINDOW_MASKS mode
+  // (see shapeRole).
+  const LAYER_MODES = {
+    TouchCopper: 'touch', // exposed touch pad
+    TouchBlack: 'covered', // touch pad under solder mask
+    LEDWindow: 'front', // LED window
+  };
+
   // Keep-out always covers both copper layers (light passes through the
   // whole board); the chosen mask layers are listed too, as KiCad does.
   function ledWindowZoneLayers(masks) {
@@ -430,15 +439,30 @@ window.Converter = (function () {
     return dedupePts(pts);
   }
 
-  // A path is the board outline if its id names it "EdgeCuts" (Illustrator
-  // "Object IDs -> Layer Names" export, case-insensitive, ignoring any
-  // Illustrator-appended uniqueness suffix like "_1_"), or — for backward
-  // compatibility with older files — if it still carries the old cls-2 class.
-  function isEdgePath(id, cls) {
-    const normId = (id || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-    if (normId.includes('edgecuts')) return true;
-    if ((cls || '').includes('cls-2')) return true;
-    return false;
+  // Lowercased, non-alphanumerics stripped, so Illustrator's variants of a
+  // layer name all match: "LED Window" -> id "LED_Window", and uniqueness
+  // suffixes like "EdgeCuts_1_" -> "edgecuts1".
+  function normId(id) {
+    return (id || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  }
+
+  // 'EdgeCuts' (board outline), a LAYER_MODES name, or null (other artwork,
+  // which follows the global settings). Illustrator's "Object IDs -> Layer
+  // Names" export puts a layer's name on its <g> (on the root <svg> for a
+  // one-layer file), or on the object itself when it's the layer's only
+  // object, so the shape's own id is checked first, then each ancestor's,
+  // and the nearest match wins. The legacy cls-2 class is checked last, so a
+  // named layer beats an Internal CSS class that happens to be cls-2.
+  function shapeRole(el) {
+    for (let node = el; node && node.nodeType === 1; node = node.parentNode) {
+      const n = normId(node.getAttribute('id'));
+      if (n.includes('edgecuts')) return 'EdgeCuts';
+      for (const name in LAYER_MODES) {
+        if (n.includes(name.toLowerCase())) return name;
+      }
+    }
+    if ((el.getAttribute('class') || '').includes('cls-2')) return 'EdgeCuts';
+    return null;
   }
 
   function parseSvg(svgText) {
@@ -452,12 +476,17 @@ window.Converter = (function () {
     const edgeSegs = [];
     const maskSegs = [];
     const keepoutSegs = []; // hole-free contours for LED-window keep-out zones
+    // Shapes on a LAYER_MODES layer, kept apart since their layers are fixed.
+    const layerSegs = {};
+    for (const name in LAYER_MODES) {
+      layerSegs[name] = { mode: LAYER_MODES[name], maskSegs: [], keepoutSegs: [] };
+    }
+    const otherSegs = { maskSegs, keepoutSegs };
     let skipped = 0;
     let ringCount = 0;
 
     for (const el of pathEls) {
-      const id = el.getAttribute('id') || '';
-      const cls = el.getAttribute('class') || '';
+      const role = shapeRole(el);
       const d = el.getAttribute('d') || '';
       const tMatrix = parseTransform(el.getAttribute('transform'));
       const hasTransform = !isIdentityMatrix(tMatrix);
@@ -467,7 +496,7 @@ window.Converter = (function () {
         continue;
       }
 
-      if (isEdgePath(id, cls)) {
+      if (role === 'EdgeCuts') {
         let pts = sampleSubpath(d);
         if (hasTransform) pts = applyTransform(pts, tMatrix);
         if (pts.length >= 2) {
@@ -478,6 +507,7 @@ window.Converter = (function () {
         continue;
       }
 
+      const out = role ? layerSegs[role] : otherSegs;
       const subpaths = splitSubpathsRaw(d);
 
       if (subpaths.length <= 1) {
@@ -486,8 +516,8 @@ window.Converter = (function () {
         if (pts.length >= 3) {
           const { w, h } = bbox(pts);
           if (w >= MIN_DIM_MM || h >= MIN_DIM_MM) {
-            maskSegs.push(pts);
-            keepoutSegs.push(pts);
+            out.maskSegs.push(pts);
+            out.keepoutSegs.push(pts);
           } else {
             skipped++;
           }
@@ -508,8 +538,8 @@ window.Converter = (function () {
         if (candidates.length === 0) {
           skipped++;
         } else if (candidates.length === 1) {
-          maskSegs.push(candidates[0][1]);
-          keepoutSegs.push(candidates[0][1]);
+          out.maskSegs.push(candidates[0][1]);
+          out.keepoutSegs.push(candidates[0][1]);
         } else {
           // Outer = largest |area|; join every other subpath into it
           // (same-winding islands first, then holes) so letters with
@@ -519,13 +549,13 @@ window.Converter = (function () {
           candidates.sort((a, b) => b[0] * sign - a[0] * sign);
           // Keep-out = outer + same-winding islands, holes filled.
           for (const c of candidates) {
-            if (c[0] * sign > 0) keepoutSegs.push(c[1]);
+            if (c[0] * sign > 0) out.keepoutSegs.push(c[1]);
           }
           let ringPts = candidates[0][1];
           for (let i = 1; i < candidates.length; i++) {
             ringPts = makeRingPolygon(ringPts, candidates[i][1]);
           }
-          maskSegs.push(ringPts);
+          out.maskSegs.push(ringPts);
           ringCount++;
         }
       }
@@ -537,8 +567,7 @@ window.Converter = (function () {
     const basicShapeEls = Array.from(doc.querySelectorAll('rect, circle, ellipse, polygon, polyline'));
 
     for (const el of basicShapeEls) {
-      const id = el.getAttribute('id') || '';
-      const cls = el.getAttribute('class') || '';
+      const role = shapeRole(el);
       const tag = el.tagName.toLowerCase();
       const num = (name) => {
         const v = el.getAttribute(name);
@@ -564,7 +593,7 @@ window.Converter = (function () {
       const tMatrix = parseTransform(el.getAttribute('transform'));
       if (!isIdentityMatrix(tMatrix)) pts = applyTransform(pts, tMatrix);
 
-      if (isEdgePath(id, cls)) {
+      if (role === 'EdgeCuts') {
         if (pts.length >= 2) {
           edgeSegs.push(pts);
         } else {
@@ -573,11 +602,12 @@ window.Converter = (function () {
         continue;
       }
 
+      const out = role ? layerSegs[role] : otherSegs;
       if (pts.length >= 3) {
         const { w, h } = bbox(pts);
         if (w >= MIN_DIM_MM || h >= MIN_DIM_MM) {
-          maskSegs.push(pts);
-          keepoutSegs.push(pts);
+          out.maskSegs.push(pts);
+          out.keepoutSegs.push(pts);
         } else {
           skipped++;
         }
@@ -586,13 +616,18 @@ window.Converter = (function () {
       }
     }
 
+    const layerCounts = {};
+    for (const name in layerSegs) layerCounts[name] = layerSegs[name].maskSegs.length;
+
     return {
       edgeSegs,
       maskSegs,
       keepoutSegs,
+      layerSegs,
       stats: {
         edgeCount: edgeSegs.length,
         maskCount: maskSegs.length,
+        layerCounts,
         ringCount,
         skipped,
       },
@@ -604,32 +639,46 @@ window.Converter = (function () {
   // anchor: null/undefined/'none' (off) or one of ANCHOR_POINTS's keys — see
   // anchorXY's doc comment above. Applied at the original size, before
   // scaling, so the chosen point lands exactly at (0, 0) at any scale.
-  function renderKicadText(edgeSegs, maskSegs, artworkLayer, scale, ledWindow, keepoutSegs, anchor) {
+  // layerSegs: parseSvg's layerSegs (shapes on a LAYER_MODES layer), each
+  // written in its own fixed mode — artworkLayer / ledWindow only apply to
+  // maskSegs, the other artwork.
+  function renderKicadText(edgeSegs, maskSegs, artworkLayer, scale, ledWindow, keepoutSegs, anchor, layerSegs) {
     scale = scale || 1;
     keepoutSegs = keepoutSegs || [];
+    let parts = Object.values(layerSegs || {});
     if (anchor && anchor !== 'none') {
-      const box = combinedBBox(edgeSegs.length ? edgeSegs : edgeSegs.concat(maskSegs));
+      const artwork = maskSegs.concat(...parts.map((p) => p.maskSegs));
+      const box = combinedBBox(edgeSegs.length ? edgeSegs : artwork);
       if (box) {
         const [ax, ay] = anchorXY(box, anchor);
-        edgeSegs = edgeSegs.map((pts) => shiftPts(pts, -ax, -ay));
-        maskSegs = maskSegs.map((pts) => shiftPts(pts, -ax, -ay));
-        keepoutSegs = keepoutSegs.map((pts) => shiftPts(pts, -ax, -ay));
+        const shift = (segs) => segs.map((pts) => shiftPts(pts, -ax, -ay));
+        edgeSegs = shift(edgeSegs);
+        maskSegs = shift(maskSegs);
+        keepoutSegs = shift(keepoutSegs);
+        parts = parts.map((p) => ({
+          mode: p.mode,
+          maskSegs: shift(p.maskSegs),
+          keepoutSegs: shift(p.keepoutSegs),
+        }));
       }
     }
     const chunks = [HEADER];
     for (const pts of edgeSegs) {
       chunks.push(grPoly(scalePts(pts, scale), 'Edge.Cuts', false, 0.05));
     }
-    const masks = ledWindow ? LED_WINDOW_MASKS[ledWindow] : [artworkLayer];
-    for (const layer of masks) {
-      for (const pts of maskSegs) {
-        chunks.push(grPoly(scalePts(pts, scale), layer, true, 0));
+    const groups = [{ mode: ledWindow, maskSegs, keepoutSegs }].concat(parts);
+    for (const g of groups) {
+      const masks = g.mode ? LED_WINDOW_MASKS[g.mode] : [artworkLayer];
+      for (const layer of masks) {
+        for (const pts of g.maskSegs) {
+          chunks.push(grPoly(scalePts(pts, scale), layer, true, 0));
+        }
       }
-    }
-    if (ledWindow) {
-      const zoneLayers = ledWindowZoneLayers(masks);
-      for (const pts of keepoutSegs || []) {
-        chunks.push(keepoutZone(scalePts(pts, scale), zoneLayers));
+      if (g.mode) {
+        const zoneLayers = ledWindowZoneLayers(masks);
+        for (const pts of g.keepoutSegs) {
+          chunks.push(keepoutZone(scalePts(pts, scale), zoneLayers));
+        }
       }
     }
     chunks.push(')');

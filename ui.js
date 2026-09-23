@@ -14,6 +14,7 @@
     edgeSegs: [],
     maskSegs: [],
     keepoutSegs: [],
+    layerSegs: {},
     stats: null,
     kicadText: '',
     svgPreviewUrl: null,
@@ -25,6 +26,7 @@
   const statsPanel = document.getElementById('statsPanel');
   const statEdge = document.getElementById('statEdge');
   const statMask = document.getElementById('statMask');
+  const statMaskLabel = document.getElementById('statMaskLabel');
   const statRing = document.getElementById('statRing');
   const statSkipped = document.getElementById('statSkipped');
   const controls = document.getElementById('controls');
@@ -99,14 +101,43 @@
     svgPreviewBox.classList.remove('empty');
   }
 
-  // keepoutSegs is drawn (hatched, like KiCad's rule areas) only when
-  // non-empty — i.e. only while LED window is on. ledWindow === 'touch' or
-  // 'covered' draws maskSegs as copper (hatched, copper-colored) instead of
-  // the usual solder-mask teal, since that artwork is F.Cu either way.
-  function showKicadPreview(edgeSegs, maskSegs, keepoutSegs, ledWindow) {
+  // One stats row per TouchCopper / TouchBlack / LEDWindow layer that has
+  // shapes, above the artwork row — which then only counts the rest, so it's
+  // relabelled "Other artwork".
+  function showLayerStats(layerCounts) {
+    for (const row of statsPanel.querySelectorAll('.stat-layer')) row.remove();
+    const artworkRow = statMask.parentElement;
+    let any = false;
+    for (const name in layerCounts) {
+      if (!layerCounts[name]) continue;
+      any = true;
+      const row = document.createElement('div');
+      row.className = 'stat stat-layer';
+      const label = document.createElement('span');
+      label.className = 'stat-label';
+      label.textContent = name;
+      const value = document.createElement('span');
+      value.className = 'stat-value';
+      value.textContent = layerCounts[name];
+      row.append(label, value);
+      statsPanel.insertBefore(row, artworkRow);
+    }
+    statMaskLabel.textContent = any ? 'Other artwork' : 'Artwork shapes';
+  }
+
+  // groups: [{ mode, maskSegs, keepoutSegs }] — the other artwork (mode =
+  // the LED-window setting, keepoutSegs empty while it's off) plus each
+  // named layer. A group in 'touch' or 'covered' mode is drawn as copper
+  // (hatched, copper-colored) instead of the usual solder-mask teal, since
+  // that artwork is F.Cu either way; keep-outs are drawn hatched on top,
+  // like KiCad's rule areas.
+  function showKicadPreview(edgeSegs, groups) {
     const svgNS = 'http://www.w3.org/2000/svg';
+    const isCopperMode = (mode) => mode === 'touch' || mode === 'covered';
+    const artworkSegs = [].concat(...groups.map((g) => g.maskSegs));
+    const keepoutSegs = [].concat(...groups.map((g) => g.keepoutSegs));
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const pts of edgeSegs.concat(maskSegs)) {
+    for (const pts of edgeSegs.concat(artworkSegs)) {
       for (const [x, y] of pts) {
         if (x < minX) minX = x;
         if (x > maxX) maxX = x;
@@ -132,7 +163,6 @@
     svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
 
     const unit = Math.max(vbW, vbH);
-    const isCopper = ledWindow === 'touch' || ledWindow === 'covered';
     let defs = null;
     const getDefs = () => {
       if (!defs) {
@@ -142,7 +172,7 @@
       return defs;
     };
 
-    if (isCopper) {
+    if (groups.some((g) => isCopperMode(g.mode) && g.maskSegs.length)) {
       // Copper artwork: solid copper-orange background + diagonal hatch,
       // echoing KiCad's own hatched rendering of copper fills.
       const gap = unit * 0.012;
@@ -164,16 +194,19 @@
       getDefs().appendChild(pattern);
     }
 
-    for (const pts of maskSegs) {
-      const poly = document.createElementNS(svgNS, 'polygon');
-      poly.setAttribute('points', pts.map(([x, y]) => `${x},${y}`).join(' '));
-      if (isCopper) {
-        poly.setAttribute('class', 'kicad-copper-shape');
-        poly.setAttribute('fill', 'url(#copperHatch)');
-      } else {
-        poly.setAttribute('class', 'kicad-mask-shape');
+    for (const g of groups) {
+      const isCopper = isCopperMode(g.mode);
+      for (const pts of g.maskSegs) {
+        const poly = document.createElementNS(svgNS, 'polygon');
+        poly.setAttribute('points', pts.map(([x, y]) => `${x},${y}`).join(' '));
+        if (isCopper) {
+          poly.setAttribute('class', 'kicad-copper-shape');
+          poly.setAttribute('fill', 'url(#copperHatch)');
+        } else {
+          poly.setAttribute('class', 'kicad-mask-shape');
+        }
+        svg.appendChild(poly);
       }
-      svg.appendChild(poly);
     }
     if (keepoutSegs.length) {
       // Diagonal hatch sized to the view so it reads the same at any board size.
@@ -235,10 +268,12 @@
       state.edgeSegs = result.edgeSegs;
       state.maskSegs = result.maskSegs;
       state.keepoutSegs = result.keepoutSegs;
+      state.layerSegs = result.layerSegs;
       state.stats = result.stats;
 
       statEdge.textContent = result.stats.edgeCount;
       statMask.textContent = result.stats.maskCount;
+      showLayerStats(result.stats.layerCounts);
       statRing.textContent = result.stats.ringCount;
       statSkipped.textContent = result.stats.skipped;
       statsPanel.hidden = false;
@@ -257,12 +292,12 @@
   // Rebuilt on file load and LED-window changes — not on layer/scale changes.
   function updatePreview() {
     const ledWindow = ledWindowCheck.checked ? ledWindowSelect.value : null;
-    showKicadPreview(
-      state.edgeSegs,
-      state.maskSegs,
-      ledWindow ? state.keepoutSegs : [],
-      ledWindow
-    );
+    const other = {
+      mode: ledWindow,
+      maskSegs: state.maskSegs,
+      keepoutSegs: ledWindow ? state.keepoutSegs : [],
+    };
+    showKicadPreview(state.edgeSegs, [other].concat(Object.values(state.layerSegs)));
   }
 
   function updateOutput() {
@@ -277,7 +312,8 @@
       getScale(),
       ledWindow,
       state.keepoutSegs,
-      anchorSelect.value
+      anchorSelect.value,
+      state.layerSegs
     );
   }
 

@@ -28,10 +28,14 @@ Usage:
                       rest of a footprint. Defaults to no shift (the SVG's
                       own coordinate origin, as before).
 
-Rules:
-    shape whose id contains "EdgeCuts", or carries the legacy cls-2 class
-                 → Edge.Cuts  (board outline)
-    all others   → F.Mask     (solder-mask openings)
+Rules, by Illustrator layer name (export with Object IDs → Layer Names;
+case, spaces and punctuation ignored; a shape's own id or its nearest
+named layer wins, so sublayers work too):
+    EdgeCuts     → Edge.Cuts  (board outline; older files: legacy cls-2 class)
+    TouchCopper  → F.Cu + F.Mask + keep-out  (exposed touch pad)
+    TouchBlack   → F.Cu + keep-out           (touch pad under solder mask)
+    LEDWindow    → F.Mask + keep-out         (LED window)
+    all others   → F.Mask, or the --led-window mode if given
 
 svgpathtools converts <polygon>, <polyline>, <rect>, <circle>, and <ellipse>
 elements to paths automatically, so they're handled the same way as <path>.
@@ -43,8 +47,9 @@ Install deps:
     pip install svgpathtools
 """
 
-import uuid, re, sys, os, math, xml.etree.ElementTree as ET
+import uuid, re, sys, os, io, math, xml.etree.ElementTree as ET
 from pathlib import Path
+from xml.dom import minidom
 from svgpathtools import svg2paths2, parse_path, Path as SvgPath
 
 SCALE = 25.4 / 72   # SVG points → mm
@@ -236,16 +241,6 @@ def shift_pts(pts, dx, dy):
     return [(round(x + dx, 4), round(y + dy, 4)) for x, y in pts]
 
 
-def is_edge_path(id_, cls):
-    """A shape is the board outline if its id names it EdgeCuts (current
-    Illustrator "Object IDs -> Layer Names" export), or — for backward
-    compatibility with older files — still carries the old cls-2 class."""
-    norm_id = re.sub(r'[^a-z0-9]', '', (id_ or '').lower())
-    if 'edgecuts' in norm_id:
-        return True
-    return 'cls-2' in (cls or '')
-
-
 LED_WINDOW_MASKS = {
     'front': ['F.Mask'],
     'back': ['B.Mask'],
@@ -253,6 +248,60 @@ LED_WINDOW_MASKS = {
     'touch': ['F.Cu', 'F.Mask'],   # touch pad: exposed copper, no other copper
     'covered': ['F.Cu'],           # covered touch pad: copper stays under solder mask
 }
+
+# Illustrator layer names that fix a shape's layers whatever --led-window
+# says, each mapped to a LED_WINDOW_MASKS mode (see shape_role).
+LAYER_MODES = {
+    'TouchCopper': 'touch',    # exposed touch pad
+    'TouchBlack': 'covered',   # touch pad under solder mask
+    'LEDWindow': 'front',      # LED window
+}
+
+ROLE_ATTR = 'data-svg2kicad-role'
+SHAPE_TAGS = ('path', 'polyline', 'polygon', 'line', 'ellipse', 'circle', 'rect')
+
+
+def norm_id(id_):
+    """Lowercased, non-alphanumerics stripped, so Illustrator's variants of
+    a layer name all match: "LED Window" -> id "LED_Window", and uniqueness
+    suffixes like "EdgeCuts_1_" -> "edgecuts1"."""
+    return re.sub(r'[^a-z0-9]', '', (id_ or '').lower())
+
+
+def shape_role(el):
+    """'EdgeCuts' (board outline), a LAYER_MODES name, or None (other
+    artwork, which follows --led-window). Illustrator's Object IDs -> Layer
+    Names export puts a layer's name on its <g> (on the root <svg> for a
+    one-layer file), or on the object itself when it's the layer's only
+    object, so the shape's own id is checked first, then each ancestor's,
+    and the nearest match wins. The legacy cls-2 class is checked last, so a
+    named layer beats an Internal CSS class that happens to be cls-2."""
+    node = el
+    while node is not None and node.nodeType == node.ELEMENT_NODE:
+        n = norm_id(node.getAttribute('id'))
+        if 'edgecuts' in n:
+            return 'EdgeCuts'
+        for name in LAYER_MODES:
+            if name.lower() in n:
+                return name
+        node = node.parentNode
+    if 'cls-2' in el.getAttribute('class'):
+        return 'EdgeCuts'
+    return None
+
+
+def tag_shape_roles(svg_path):
+    """svg2paths2 flattens the document, dropping each shape's parent groups,
+    so every shape's role is worked out on the DOM first and carried through
+    svg2paths2 as an extra attribute (ROLE_ATTR). Only tags — the geometry
+    still comes from svg2paths2 alone."""
+    doc = minidom.parse(svg_path)
+    for tag in SHAPE_TAGS:
+        for el in doc.getElementsByTagName(tag):
+            role = shape_role(el)
+            if role:
+                el.setAttribute(ROLE_ATTR, role)
+    return io.StringIO(doc.toxml())
 
 
 def led_window_zone_layers(masks):
@@ -342,7 +391,7 @@ HEADER = '''(kicad_pcb
 
 
 def convert(svg_path, out_path, scale=1.0, led_window=None, anchor=None):
-    paths, attrs, _ = svg2paths2(svg_path)
+    paths, attrs, _ = svg2paths2(tag_shape_roles(svg_path))
 
     # Pre-parse raw d attributes for reliable compound-path detection (handles ZM with no space)
     _ET_paths = list(ET.parse(svg_path).getroot().iter('{http://www.w3.org/2000/svg}path'))
@@ -350,11 +399,12 @@ def convert(svg_path, out_path, scale=1.0, led_window=None, anchor=None):
 
     edge_segs, mask_segs = [], []
     keepout_segs = []   # hole-free contours for LED-window keep-out zones
+    # Shapes on a LAYER_MODES layer, kept apart since their layers are fixed.
+    layer_segs = {name: {'mask': [], 'keepout': []} for name in LAYER_MODES}
     skipped = ring_count = 0
 
     for path_idx, (path, attr) in enumerate(zip(paths, attrs)):
-        cls = attr.get('class', '')
-        id_ = attr.get('id', '')
+        role = attr.get(ROLE_ATTR)
         if not path:
             skipped += 1
             continue
@@ -362,7 +412,7 @@ def convert(svg_path, out_path, scale=1.0, led_window=None, anchor=None):
         t_matrix = parse_transform(attr.get('transform', ''))
         has_transform = not is_identity_matrix(t_matrix)
 
-        if is_edge_path(id_, cls):
+        if role == 'EdgeCuts':
             pts = path_to_pts(path)
             if has_transform:
                 pts = apply_transform(pts, t_matrix)
@@ -371,6 +421,10 @@ def convert(svg_path, out_path, scale=1.0, led_window=None, anchor=None):
             else:
                 skipped += 1
         else:
+            if role:
+                out_mask, out_keepout = layer_segs[role]['mask'], layer_segs[role]['keepout']
+            else:
+                out_mask, out_keepout = mask_segs, keepout_segs
             raw = _raw_d[path_idx] if path_idx < len(_raw_d) else ''
             subpaths = split_subpaths_raw(raw) if raw else [path]
 
@@ -381,8 +435,8 @@ def convert(svg_path, out_path, scale=1.0, led_window=None, anchor=None):
                 if len(pts) >= 3:
                     xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
                     if (max(xs) - min(xs)) >= MIN_DIM_MM or (max(ys) - min(ys)) >= MIN_DIM_MM:
-                        mask_segs.append(pts)
-                        keepout_segs.append(pts)
+                        out_mask.append(pts)
+                        out_keepout.append(pts)
                     else:
                         skipped += 1
                 else:
@@ -403,18 +457,18 @@ def convert(svg_path, out_path, scale=1.0, led_window=None, anchor=None):
                 if not candidates:
                     skipped += 1
                 elif len(candidates) == 1:
-                    mask_segs.append(candidates[0][1])
-                    keepout_segs.append(candidates[0][1])
+                    out_mask.append(candidates[0][1])
+                    out_keepout.append(candidates[0][1])
                 else:
                     # Outer = largest |area|; join every other subpath into it
                     # (same-winding islands first, then holes) so letters with
                     # several counters (B, 8, %) keep all their holes.
                     candidates, islands = split_by_winding(candidates)
-                    keepout_segs.extend(islands)
+                    out_keepout.extend(islands)
                     ring_pts = candidates[0][1]
                     for _, pts in candidates[1:]:
                         ring_pts = make_ring_polygon(ring_pts, pts)
-                    mask_segs.append(ring_pts)
+                    out_mask.append(ring_pts)
                     ring_count += 1
 
     # Anchor: computed at the original SVG size, before scaling, from the
@@ -422,25 +476,35 @@ def convert(svg_path, out_path, scale=1.0, led_window=None, anchor=None):
     # chosen point lands exactly at (0, 0) after scaling regardless of scale.
     anchor_shift = None
     if anchor and anchor != 'none':
-        box = bbox_of(edge_segs) or bbox_of(edge_segs + mask_segs)
+        artwork = mask_segs + [pts for part in layer_segs.values() for pts in part['mask']]
+        box = bbox_of(edge_segs) or bbox_of(artwork)
         if box:
             ax, ay = anchor_xy(box, anchor)
             anchor_shift = (ax, ay)
             edge_segs = [shift_pts(pts, -ax, -ay) for pts in edge_segs]
             mask_segs = [shift_pts(pts, -ax, -ay) for pts in mask_segs]
             keepout_segs = [shift_pts(pts, -ax, -ay) for pts in keepout_segs]
+            for part in layer_segs.values():
+                part['mask'] = [shift_pts(pts, -ax, -ay) for pts in part['mask']]
+                part['keepout'] = [shift_pts(pts, -ax, -ay) for pts in part['keepout']]
 
     chunks = [HEADER]
     for pts in edge_segs:
         chunks.append(gr_poly(scale_pts(pts, scale), 'Edge.Cuts', fill_solid=False, width=0.05))
+    # Other artwork follows --led-window; each LAYER_MODES layer has its own
+    # fixed mode.
     masks = LED_WINDOW_MASKS[led_window] if led_window else ['F.Mask']
-    for layer in masks:
-        for pts in mask_segs:
-            chunks.append(gr_poly(scale_pts(pts, scale), layer, fill_solid=True, width=0))
-    if led_window:
-        zone_layers = led_window_zone_layers(masks)
-        for pts in keepout_segs:
-            chunks.append(keepout_zone(scale_pts(pts, scale), zone_layers))
+    groups = [(masks, bool(led_window), mask_segs, keepout_segs)]
+    for name, part in layer_segs.items():
+        groups.append((LED_WINDOW_MASKS[LAYER_MODES[name]], True, part['mask'], part['keepout']))
+    for group_masks, has_keepout, segs, keepouts in groups:
+        for layer in group_masks:
+            for pts in segs:
+                chunks.append(gr_poly(scale_pts(pts, scale), layer, fill_solid=True, width=0))
+        if has_keepout:
+            zone_layers = led_window_zone_layers(group_masks)
+            for pts in keepouts:
+                chunks.append(keepout_zone(scale_pts(pts, scale), zone_layers))
     chunks.append(')')
 
     with open(out_path, 'w') as f:
@@ -448,6 +512,10 @@ def convert(svg_path, out_path, scale=1.0, led_window=None, anchor=None):
 
     print(f"Edge.Cuts  : {len(edge_segs)}")
     print(f"F.Mask     : {len(mask_segs)}")
+    for name, part in layer_segs.items():
+        if part['mask']:
+            layers = ' + '.join(LED_WINDOW_MASKS[LAYER_MODES[name]])
+            print(f"{name:<11}: {len(part['mask'])}  ({layers} + keep-out)")
     print(f"Ring polys : {ring_count}")
     print(f"Skipped    : {skipped}")
     print(f"Scale      : {scale}x")
