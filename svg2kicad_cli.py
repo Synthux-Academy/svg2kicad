@@ -41,6 +41,7 @@ named layer wins, so sublayers work too):
     TouchCopper  → F.Cu + F.Mask + keep-out  (exposed touch pad)
     TouchBlack   → F.Cu + keep-out           (touch pad under solder mask)
     LEDWindow    → F.Mask + B.Mask + keep-out  (LED window, clear on both sides)
+    FMask        → F.Mask only, no keep-out  (plain mask opening)
     all others   → F.Mask, or the --led-window mode if given
 Hidden layers and shapes (display:none or visibility:hidden, e.g. a layer
 hidden in Illustrator) are ignored entirely, whatever their name.
@@ -265,12 +266,18 @@ LED_WINDOW_MASKS = {
     'covered': ['F.Cu'],           # covered touch pad: copper stays under solder mask
 }
 
+# Modes a named layer can have: the LED-window ones, plus 'mask', a plain
+# F.Mask opening with no keep-out (not an --led-window value).
+MODE_MASKS = dict(LED_WINDOW_MASKS, mask=['F.Mask'])
+NO_KEEPOUT_MODES = {'mask'}
+
 # Illustrator layer names that fix a shape's layers whatever --led-window
-# says, each mapped to a LED_WINDOW_MASKS mode (see shape_role).
+# says, each mapped to a MODE_MASKS mode (see shape_role).
 LAYER_MODES = {
     'TouchCopper': 'touch',    # exposed touch pad
     'TouchBlack': 'covered',   # touch pad under solder mask
     'LEDWindow': 'both',       # LED window: no mask either side, so light gets through
+    'FMask': 'mask',           # F.Mask only, whatever --led-window says
 }
 
 ROLE_ATTR = 'data-svg2kicad-role'
@@ -883,7 +890,8 @@ def convert(in_path, out_path, scale=1.0, led_window=None, anchor=None, size=Non
     masks = LED_WINDOW_MASKS[led_window] if led_window else ['F.Mask']
     groups = [(masks, bool(led_window), mask_segs, keepout_segs)]
     for name, part in layer_segs.items():
-        groups.append((LED_WINDOW_MASKS[LAYER_MODES[name]], True, part['mask'], part['keepout']))
+        mode = LAYER_MODES[name]
+        groups.append((MODE_MASKS[mode], mode not in NO_KEEPOUT_MODES, part['mask'], part['keepout']))
     for group_masks, has_keepout, segs, keepouts in groups:
         for layer in group_masks:
             for pts in segs:
@@ -901,8 +909,10 @@ def convert(in_path, out_path, scale=1.0, led_window=None, anchor=None, size=Non
     print(f"F.Mask     : {len(mask_segs)}")
     for name, part in layer_segs.items():
         if part['mask']:
-            layers = ' + '.join(LED_WINDOW_MASKS[LAYER_MODES[name]])
-            print(f"{name:<11}: {len(part['mask'])}  ({layers} + keep-out)")
+            mode = LAYER_MODES[name]
+            layers = ' + '.join(MODE_MASKS[mode])
+            keepout = '' if mode in NO_KEEPOUT_MODES else ' + keep-out'
+            print(f"{name:<11}: {len(part['mask'])}  ({layers}{keepout})")
     print(f"Ring polys : {ring_count}")
     print(f"Skipped    : {skipped}")
     print(f"Scale      : {scale:g}x")

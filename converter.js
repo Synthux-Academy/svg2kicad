@@ -317,13 +317,19 @@ window.Converter = (function () {
     covered: ['F.Cu'], // covered touch pad: copper stays under solder mask
   };
 
+  // Modes a named layer can have: the LED-window ones, plus 'mask', a plain
+  // F.Mask opening with no keep-out (not an LED-window setting).
+  const MODE_MASKS = Object.assign({ mask: ['F.Mask'] }, LED_WINDOW_MASKS);
+  const NO_KEEPOUT_MODES = new Set(['mask']);
+
   // Illustrator layer names that fix a shape's layers whatever the global
-  // layer / LED-window settings say, each mapped to a LED_WINDOW_MASKS mode
+  // layer / LED-window settings say, each mapped to a MODE_MASKS mode
   // (see shapeRole).
   const LAYER_MODES = {
     TouchCopper: 'touch', // exposed touch pad
     TouchBlack: 'covered', // touch pad under solder mask
     LEDWindow: 'both', // LED window: no mask either side, so light gets through
+    FMask: 'mask', // F.Mask only, whatever the global settings say
   };
 
   // Keep-out always covers both copper layers (light passes through the
@@ -1082,13 +1088,13 @@ window.Converter = (function () {
     }
     const groups = [{ mode: ledWindow, maskSegs, keepoutSegs }].concat(parts);
     for (const g of groups) {
-      const masks = g.mode ? LED_WINDOW_MASKS[g.mode] : [artworkLayer];
+      const masks = g.mode ? MODE_MASKS[g.mode] : [artworkLayer];
       for (const layer of masks) {
         for (const pts of g.maskSegs) {
           chunks.push(grPoly(scalePts(pts, scale), layer, true, 0));
         }
       }
-      if (g.mode) {
+      if (g.mode && !NO_KEEPOUT_MODES.has(g.mode)) {
         const zoneLayers = ledWindowZoneLayers(masks);
         for (const pts of g.keepoutSegs) {
           chunks.push(keepoutZone(scalePts(pts, scale), zoneLayers));

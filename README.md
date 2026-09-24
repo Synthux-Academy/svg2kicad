@@ -5,7 +5,7 @@
 Converts an SVG artwork file (or a PNG) into a KiCad PCB file (`.kicad_pcb`).
 
 - The **board outline** becomes the **Edge.Cuts** layer — either an object/layer named `EdgeCuts` in Illustrator (exported with Object IDs → Layer Names), or the older `cls-2` CSS class convention
-- **Named layers** let one SVG mix parts: shapes on an Illustrator layer named `TouchCopper` (exposed touch pad), `TouchBlack` (touch pad under solder mask) or `LEDWindow` get those layers plus a copper keep-out, whatever the settings below say — see [Named layers](#named-layers)
+- **Named layers** let one SVG mix parts: shapes on an Illustrator layer named `TouchCopper` (exposed touch pad), `TouchBlack` (touch pad under solder mask) or `LEDWindow` get those layers plus a copper keep-out, and shapes on `FMask` go on F.Mask only, whatever the settings below say — see [Named layers](#named-layers)
 - All **other paths** become openings on your chosen KiCad layer (defaults to **F.Mask**)
 - **Letter shapes** with counter-holes (O, B, P, D…) are handled correctly — holes render as holes in KiCad, not solid disks
 - Optional **LED window** mode: each artwork shape is placed on F.Mask, B.Mask or both, plus a copper **keep-out zone** with the same outline, so an LED behind the board can shine through — or as a **touch pad**, exposed (F.Cu + F.Mask + keep-out) or **covered** under solder mask (F.Cu + keep-out)
@@ -23,7 +23,7 @@ There are two ways to use it: a **command-line script** (below) and a **drag-and
 
 No install needed — just open [`index.html`](index.html) in a browser (double-click it, or `open index.html`).
 
-1. Drag an SVG (or a [PNG](#png-input)) onto the **Source** panel (or click it to browse). It shows your source artwork, and the **KiCad shapes** panel shows the converted result: outline in yellow, holes rendered as holes, and each part in its own look — `TouchCopper` as copper, `TouchBlack` black with gray diagonal lines, `LEDWindow` light yellow, other artwork teal. The stats list a count for each [named layer](#named-layers) found, with everything else as "Other artwork". A short "How it works" note with the layer names sits under the Copy button.
+1. Drag an SVG (or a [PNG](#png-input)) onto the **Source** panel (or click it to browse). It shows your source artwork, and the **KiCad shapes** panel shows the converted result: outline in yellow, holes rendered as holes, and each part in its own look — `TouchCopper` as copper, `TouchBlack` black with gray diagonal lines, `LEDWindow` light yellow, `FMask` and other artwork teal. The stats list a count for each [named layer](#named-layers) found, with everything else as "Other artwork". A short "How it works" note with the layer names sits under the Copy button.
 2. Pick the KiCad layer the artwork should land on (defaults to F.Mask; click "Show more layers" for the full list). This, and step 3, only apply to artwork that isn't on a named layer.
 3. Optionally tick **LED window / touch pad** and pick F.Mask + keep-out, B.Mask + keep-out, F.Mask + B.Mask + keep-out, Touch pad (F.Cu + F.Mask + keep-out), or Covered touch pad (F.Cu + keep-out) (this replaces the artwork layer — see [LED window](#led-window) below). The KiCad preview then shows that artwork in the same look as the matching named layer: LED windows light yellow, touch pad as copper, covered touch pad black with gray diagonal lines. Keep-out zones aren't drawn separately — each one follows its shape's outer outline (see [LED window](#led-window)).
 4. Optionally pick an **Anchor point** (defaults to Top-center; your choice carries over across SVG uploads until you change it — pick None for the SVG's own coordinate origin). Picking one of the nine board-outline positions shifts every output coordinate so that point lands at (0, 0) — see [Anchor point](#anchor-point) below.
@@ -120,9 +120,10 @@ SVG shapes — `<path>`, `<polygon>`, `<polyline>`, `<rect>` (including rounded 
 | `TouchCopper` | F.Cu + F.Mask + keep-out | Exposed touch pad |
 | `TouchBlack` | F.Cu + keep-out | Touch pad under solder mask |
 | `LEDWindow` | F.Mask + B.Mask + keep-out | LED window — no mask or copper on either side, so light from behind the board gets through |
+| `FMask` | F.Mask only (no keep-out) | Solder-mask opening, whatever the artwork layer / LED window setting |
 | anything else | F.Mask (or your chosen layer / LED window mode) | Solder-mask opening |
 
-**Hidden layers and shapes are ignored.** Anything hidden in Illustrator (exported as `display: none`), or set to `visibility: hidden`, never reaches the output — not even on a layer named `EdgeCuts`, `TouchCopper`, `TouchBlack` or `LEDWindow`.
+**Hidden layers and shapes are ignored.** Anything hidden in Illustrator (exported as `display: none`), or set to `visibility: hidden`, never reaches the output — not even on a layer named `EdgeCuts`, `TouchCopper`, `TouchBlack`, `LEDWindow` or `FMask`.
 
 **Compound paths** (a single SVG path that contains an outer boundary and one or more inner counter-holes, separated by `Z M` in the path data) are detected automatically. Every hole is joined to the outer contour by a zero-width bridge, producing a single polygon, so KiCad renders all the holes correctly — including letters with more than one counter, like B or 8.
 
@@ -139,11 +140,11 @@ Letter counters (the inside of an O, B…) keep their holes in the mask, but are
 
 ### Named layers
 
-To mix touch pads, LED windows and plain mask artwork in one SVG, put each kind on its own Illustrator layer named `TouchCopper`, `TouchBlack` or `LEDWindow` (see the table above) and export with **Object IDs → Layer Names**, the same as for `EdgeCuts`. Everything else can sit on any other layer and follows the artwork layer / LED window settings as usual.
+To mix touch pads, LED windows and plain mask artwork in one SVG, put each kind on its own Illustrator layer named `TouchCopper`, `TouchBlack`, `LEDWindow` or `FMask` (see the table above) and export with **Object IDs → Layer Names**, the same as for `EdgeCuts`. Everything else can sit on any other layer and follows the artwork layer / LED window settings as usual.
 
-- Case, spaces and punctuation don't matter (`LED Window` works), and neither do the `_1_`-style suffixes Illustrator adds to repeated names.
+- Case, spaces and punctuation don't matter (`LED Window` and `F.Mask` work), and neither do the `_1_`-style suffixes Illustrator adds to repeated names.
 - A shape belongs to the nearest layer with one of these names, so sublayers work. It also means every object on the `EdgeCuts` layer is outline, including a second object such as a cutout.
-- The named layers' keep-outs work exactly as described under [LED window](#led-window). They are always written, whatever the LED window setting.
+- The named layers' keep-outs work exactly as described under [LED window](#led-window). They are always written, whatever the LED window setting. `FMask` has no keep-out: it's a plain F.Mask opening, like default artwork, but it stays on F.Mask when you pick another artwork layer or turn LED window on.
 - The web app's stats show a count per named layer, and the CLI prints one line per named layer it finds — a quick check for a misspelled layer name, whose shapes would count as other artwork instead.
 
 ### Anchor point

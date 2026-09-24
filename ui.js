@@ -109,7 +109,7 @@
     svgPreviewBox.classList.remove('empty');
   }
 
-  // One stats row per TouchCopper / TouchBlack / LEDWindow layer that has
+  // One stats row per TouchCopper / TouchBlack / LEDWindow / FMask layer that has
   // shapes, above the artwork row — which then only counts the rest, so it's
   // relabelled "Other artwork".
   function showLayerStats(layerCounts) {
@@ -136,8 +136,8 @@
   // Preview look per LED-window mode, so each part reads as what it is on
   // the board: touch (TouchCopper) = exposed copper, covered (TouchBlack) =
   // copper under solder mask, black with gray hatch, front/back/both
-  // (LEDWindow) = LED window, light yellow. Artwork with no mode keeps the
-  // solder-mask teal (.kicad-mask-shape).
+  // (LEDWindow) = LED window, light yellow. Artwork with no mode, or mask
+  // (FMask), keeps the solder-mask teal (.kicad-mask-shape).
   const MODE_STYLES = {
     touch: { cls: 'kicad-copper-shape', hatch: 'copper' },
     covered: { cls: 'kicad-covered-shape', hatch: 'covered' },
