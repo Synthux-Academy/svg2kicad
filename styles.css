@@ -285,7 +285,8 @@ h1 {
   cursor: pointer;
 }
 
-.scale-input {
+.scale-input,
+.size-input {
   width: 90px;
   padding: 8px 10px;
   border-radius: 6px;
@@ -293,6 +294,10 @@ h1 {
   background: var(--panel-bg);
   color: var(--fg);
   font-size: 14px;
+}
+
+.size-times {
+  color: var(--fg-muted);
 }
 
 .link-button {
@@ -354,6 +359,10 @@ h1 {
 
 .how-to li {
   margin-top: 4px;
+}
+
+.how-to p {
+  margin: 8px 0 0;
 }
 
 .how-to code {

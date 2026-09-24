@@ -1,4 +1,4 @@
-// ui.js — drag/drop, layer selection, clipboard wiring
+// ui.js — drag/drop (SVG or PNG), layer selection, size, clipboard wiring
 
 (function () {
   const COMMON_LAYERS = ['F.Mask', 'F.Cu', 'B.Cu', 'F.SilkS', 'B.SilkS', 'B.Mask'];
@@ -18,6 +18,8 @@
     stats: null,
     kicadText: '',
     svgPreviewUrl: null,
+    scale: 1,
+    box: null, // Converter.referenceBox of the loaded file
   };
 
   const fileInput = document.getElementById('fileInput');
@@ -31,6 +33,8 @@
   const controls = document.getElementById('controls');
   const layerSelect = document.getElementById('layerSelect');
   const scaleInput = document.getElementById('scaleInput');
+  const widthInput = document.getElementById('widthInput');
+  const heightInput = document.getElementById('heightInput');
   const ledWindowCheck = document.getElementById('ledWindowCheck');
   const ledWindowSelect = document.getElementById('ledWindowSelect');
   const anchorSelect = document.getElementById('anchorSelect');
@@ -42,7 +46,7 @@
   const clipboardStaging = document.getElementById('clipboardStaging');
   const svgPreviewBox = document.getElementById('svgPreview');
   const kicadPreviewBox = document.getElementById('kicadPreview');
-  const SVG_PREVIEW_PLACEHOLDER = '<p class="preview-placeholder">Drag an SVG here, or click to browse</p>';
+  const SVG_PREVIEW_PLACEHOLDER = '<p class="preview-placeholder">Drag an SVG or PNG here, or click to browse</p>';
   const KICAD_PREVIEW_PLACEHOLDER = '<p class="preview-placeholder">Converted shapes will appear here.</p>';
 
   function populateLayerSelect() {
@@ -73,6 +77,10 @@
     clipboardStaging.classList.remove('visible');
     setCopyStatus('', false);
     scaleInput.value = '1';
+    state.scale = 1;
+    state.box = null;
+    widthInput.value = '';
+    heightInput.value = '';
     // Anchor point is intentionally left alone — it's a paste-alignment
     // preference that should carry over to the next SVG, not per-file state.
 
@@ -86,13 +94,14 @@
     kicadPreviewBox.innerHTML = KICAD_PREVIEW_PLACEHOLDER;
   }
 
-  function showSourcePreview(svgText) {
-    const blob = new Blob([svgText], { type: 'image/svg+xml' });
+  // blob: the SVG text or the PNG, shown via <img> — never innerHTML, so an
+  // untrusted SVG's scripts never run.
+  function showSourcePreview(blob) {
     const url = URL.createObjectURL(blob);
     state.svgPreviewUrl = url;
 
     const img = document.createElement('img');
-    img.alt = 'SVG preview';
+    img.alt = 'Source preview';
     img.src = url;
 
     svgPreviewBox.innerHTML = '';
@@ -235,13 +244,49 @@
     return isFinite(v) && v > 0 ? v : 1;
   }
 
+  // Output size: the reference box (the board outline, else all artwork —
+  // the box the anchor uses too) times the scale. Typing a width or height
+  // sets the scale so that side comes out that size, keeping the proportions;
+  // the other two fields follow whichever one is being typed in.
+  function boxSize() {
+    const b = state.box;
+    return b ? [b.maxX - b.minX, b.maxY - b.minY] : [0, 0];
+  }
+
+  function formatNumber(v, decimals) {
+    return String(Number(v.toFixed(decimals)));
+  }
+
+  function showSize(typedIn) {
+    const [w, h] = boxSize();
+    if (typedIn !== widthInput) widthInput.value = w ? formatNumber(w * state.scale, 3) : '';
+    if (typedIn !== heightInput) heightInput.value = h ? formatNumber(h * state.scale, 3) : '';
+    if (typedIn !== scaleInput) scaleInput.value = formatNumber(state.scale, 6);
+  }
+
+  function onSizeInput(input, natural) {
+    const v = parseFloat(input.value);
+    if (!(v > 0 && natural > 0)) return;
+    state.scale = v / natural;
+    showSize(input);
+    updateOutput();
+  }
+
+  // Bumped per file, so a slow load (a large PNG) can't overwrite a newer one.
+  let loadCount = 0;
+
   function handleFile(file) {
     if (!file) return;
+    const load = ++loadCount;
     resetForNewFile();
     fileNameEl.hidden = false;
     fileNameEl.textContent = file.name;
 
-    file.text().then((text) => {
+    file.arrayBuffer().then((buffer) => {
+      if (load !== loadCount) return;
+      const bytes = new Uint8Array(buffer);
+      if (window.Converter.isPng(bytes)) return loadPng(file, bytes, load);
+      const text = new TextDecoder().decode(bytes);
       let result;
       try {
         result = window.Converter.parseSvg(text);
@@ -249,29 +294,57 @@
         setCopyStatus('Could not read that SVG: ' + err.message, true);
         return;
       }
-
-      state.edgeSegs = result.edgeSegs;
-      state.maskSegs = result.maskSegs;
-      state.keepoutSegs = result.keepoutSegs;
-      state.layerSegs = result.layerSegs;
-      state.stats = result.stats;
-
-      statEdge.textContent = result.stats.edgeCount;
-      statMask.textContent = result.stats.maskCount;
-      showLayerStats(result.stats.layerCounts);
-      statRing.textContent = result.stats.ringCount;
-      statSkipped.textContent = result.stats.skipped;
-      statsPanel.hidden = false;
-      controls.hidden = false;
-      copyBtn.disabled = false;
-
-      showSourcePreview(text);
-
-      updateOutput();
-      updatePreview();
+      showResult(result, new Blob([text], { type: 'image/svg+xml' }));
     }).catch((err) => {
-      setCopyStatus('Could not read that file: ' + err.message, true);
+      if (load === loadCount) setCopyStatus('Could not read that file: ' + err.message, true);
     });
+  }
+
+  // The browser decodes the PNG, without color management, so the gray
+  // levels are the file's own (as Pillow reads them in the CLI).
+  function loadPng(file, bytes, load) {
+    const blob = new Blob([bytes], { type: 'image/png' });
+    const options = { colorSpaceConversion: 'none', premultiplyAlpha: 'none' };
+    return createImageBitmap(blob, options).then((bitmap) => {
+      if (load !== loadCount) return;
+      const canvas = document.createElement('canvas');
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(bitmap, 0, 0);
+      const { data, width, height } = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
+      const result = window.Converter.parsePng(data, width, height, window.Converter.pngDpi(bytes));
+      const [dx, dy] = result.image.dpi.map(Math.round);
+      const dpiNote = !result.image.dpiFromFile
+        ? `no DPI in the file, using ${dx}`
+        : dx === dy ? `${dx} DPI` : `${dx} × ${dy} DPI`;
+      fileNameEl.textContent = `${file.name} — ${width} × ${height} px, ${dpiNote}`;
+      showResult(result, blob);
+    });
+  }
+
+  function showResult(result, sourceBlob) {
+    state.edgeSegs = result.edgeSegs;
+    state.maskSegs = result.maskSegs;
+    state.keepoutSegs = result.keepoutSegs;
+    state.layerSegs = result.layerSegs;
+    state.stats = result.stats;
+    state.box = window.Converter.referenceBox(result.edgeSegs, result.maskSegs, result.layerSegs);
+
+    statEdge.textContent = result.stats.edgeCount;
+    statMask.textContent = result.stats.maskCount;
+    showLayerStats(result.stats.layerCounts);
+    statRing.textContent = result.stats.ringCount;
+    statSkipped.textContent = result.stats.skipped;
+    statsPanel.hidden = false;
+    controls.hidden = false;
+    copyBtn.disabled = false;
+
+    showSourcePreview(sourceBlob);
+    showSize();
+
+    updateOutput();
+    updatePreview();
   }
 
   // Rebuilt on file load and LED-window changes — not on layer/scale changes.
@@ -290,7 +363,7 @@
       state.edgeSegs,
       state.maskSegs,
       layerSelect.value,
-      getScale(),
+      state.scale,
       ledWindow,
       state.keepoutSegs,
       anchorSelect.value,
@@ -298,7 +371,7 @@
     );
   }
 
-  // The SVG source panel is the only file target: drop an SVG on it, or
+  // The source panel is the only file target: drop an SVG or PNG on it, or
   // click it (Enter/Space when focused) to browse.
   svgPreviewBox.addEventListener('click', () => fileInput.click());
   svgPreviewBox.addEventListener('keydown', (e) => {
@@ -326,7 +399,13 @@
   });
 
   layerSelect.addEventListener('change', updateOutput);
-  scaleInput.addEventListener('input', updateOutput);
+  scaleInput.addEventListener('input', () => {
+    state.scale = getScale();
+    showSize(scaleInput);
+    updateOutput();
+  });
+  widthInput.addEventListener('input', () => onSizeInput(widthInput, boxSize()[0]));
+  heightInput.addEventListener('input', () => onSizeInput(heightInput, boxSize()[1]));
   anchorSelect.addEventListener('change', updateOutput);
   ledWindowCheck.addEventListener('change', () => {
     updateOutput();

@@ -10,7 +10,7 @@
   <div class="app">
     <aside class="sidebar">
       <h1>SVG → KiCad</h1>
-      <p class="subtitle">Drop an SVG, pick a layer, copy, then paste (Ctrl/Cmd+V) into KiCad's PCB editor.</p>
+      <p class="subtitle">Drop an SVG or PNG, pick a layer, copy, then paste (Ctrl/Cmd+V) into KiCad's PCB editor.</p>
 
       <div id="fileName" class="file-name" hidden></div>
 
@@ -67,6 +67,11 @@
           <option value="bottom-right">Bottom-right</option>
         </select>
 
+        <label for="widthInput">Output size in mm (width × height)</label>
+        <input type="number" id="widthInput" class="size-input" min="0" step="any" aria-label="Output width in mm">
+        <span class="size-times">×</span>
+        <input type="number" id="heightInput" class="size-input" min="0" step="any" aria-label="Output height in mm">
+
         <label for="scaleInput">Scale (1 = 1:1)</label>
         <input type="number" id="scaleInput" class="scale-input" value="1" min="0.001" step="any">
 
@@ -89,18 +94,19 @@
             Artwork on any other layer uses the Artwork layer setting (F.Mask by default). Hidden layers are ignored.
           </li>
           <li>Export as SVG with Object IDs set to Layer Names, and Decimal Places at 3 or higher — 1 decimal place rounds coordinates to ~0.035mm steps, which shows up as flats on circles (e.g. a round touch pad cut from an LED window won't line up).</li>
-          <li>Drop the SVG on the SVG source panel (or click it to browse), check the KiCad preview, then copy and paste into KiCad's PCB editor (Ctrl/Cmd+V).</li>
+          <li>Drop the SVG on the Source panel (or click it to browse), check the KiCad preview, then copy and paste into KiCad's PCB editor (Ctrl/Cmd+V).</li>
         </ol>
+        <p>A PNG works too: its dark areas become artwork (Artwork layer or LED window setting), light areas inside them stay holes, and there's no board outline. Its size comes from the PNG's DPI (72 if it has none); set Output size to change it.</p>
       </section>
     </aside>
 
     <section class="preview">
       <div class="preview-panel">
-        <h2 class="preview-title">SVG source</h2>
+        <h2 class="preview-title">Source</h2>
         <div id="svgPreview" class="preview-box svg-drop-box empty" tabindex="0">
-          <p class="preview-placeholder">Drag an SVG here, or click to browse</p>
+          <p class="preview-placeholder">Drag an SVG or PNG here, or click to browse</p>
         </div>
-        <input type="file" id="fileInput" accept=".svg,image/svg+xml" hidden>
+        <input type="file" id="fileInput" accept=".svg,image/svg+xml,.png,image/png" hidden>
       </div>
       <div class="preview-panel">
         <h2 class="preview-title">KiCad shapes</h2>

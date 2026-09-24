@@ -1,5 +1,5 @@
-// converter.js — SVG → KiCad conversion logic (port of svg2kicad_cli.py)
-// Exposes window.Converter = { parseSvg, renderKicadText }
+// converter.js — SVG / PNG → KiCad conversion logic (port of svg2kicad_cli.py)
+// Exposes window.Converter = { parseSvg, isPng, pngDpi, parsePng, referenceBox, renderKicadText }
 
 window.Converter = (function () {
   const SCALE = 25.4 / 72; // SVG points -> mm
@@ -705,6 +705,350 @@ window.Converter = (function () {
     };
   }
 
+  // PNG input: every dark area becomes one artwork shape, with the light
+  // areas inside it bridged in as holes. Outlines are traced with marching
+  // squares over the pixel centers, interpolating the anti-aliased gray
+  // levels for sub-pixel accuracy. svg2kicad_cli.py does the same, step for
+  // step (png_shapes and the functions it calls).
+  const PNG_THRESHOLD = 127.5; // luminance 0-255: darker is artwork
+  const PNG_DEFAULT_DPI = 72; // a PNG with no DPI: 1 px = 1 pt, the same unit as SVG
+  const PNG_MIN_AREA_PX = 2; // dark or light specks under this many px² are noise
+  const PNG_TOLERANCE_PX = 0.25; // traced outlines are simplified to within this
+  const TOP = 0, RIGHT = 1, BOTTOM = 2, LEFT = 3;
+
+  function isPng(bytes) {
+    const signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+    return bytes.length >= 8 && signature.every((b, i) => bytes[i] === b);
+  }
+
+  // [dpiX, dpiY] from the PNG's pHYs chunk, or null if it has none (or one
+  // that gives only an aspect ratio). Computed as Pillow does in the CLI.
+  function pngDpi(bytes) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    for (let at = 8; at + 8 <= bytes.length; ) {
+      const length = view.getUint32(at);
+      const type = String.fromCharCode(bytes[at + 4], bytes[at + 5], bytes[at + 6], bytes[at + 7]);
+      if (type === 'IDAT' || type === 'IEND') break;
+      if (type === 'pHYs' && length >= 9 && at + 17 <= bytes.length) {
+        const px = view.getUint32(at + 8), py = view.getUint32(at + 12);
+        return bytes[at + 16] === 1 && px > 0 && py > 0 ? [px * 0.0254, py * 0.0254] : null;
+      }
+      at += 12 + length;
+    }
+    return null;
+  }
+
+  // Luminance (0-255) of RGBA pixels, transparency composited over white, on
+  // a grid with a 1 px white border added so every contour closes.
+  function paddedLuminance(rgba, width, height) {
+    const W = width + 2;
+    const grid = new Float64Array(W * (height + 2)).fill(255);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const o = (y * width + x) * 4;
+        let v = (rgba[o] * 299 + rgba[o + 1] * 587 + rgba[o + 2] * 114) / 1000;
+        const a = rgba[o + 3];
+        if (a < 255) v = 255 - ((255 - v) * a) / 255;
+        grid[(y + 1) * W + x + 1] = v;
+      }
+    }
+    return grid;
+  }
+
+  // Marching squares on the padded grid (W x H points). Returns the crossing
+  // points (xs, ys, in px of that grid, where grid point (x, y) is the center
+  // of image pixel (x - 1, y - 1)), the pixel row of each crossing on a
+  // horizontal edge (those come first, in row-major order), the contours as
+  // arrays of crossing ids and the contour of each crossing. Contours keep
+  // the dark side on their left and start at their topmost-leftmost
+  // crossing. A saddle cell joins its two dark corners when the mean of its
+  // corners is dark.
+  function traceContours(grid, W, H) {
+    const dark = new Uint8Array(W * H);
+    for (let p = 0; p < W * H; p++) dark[p] = grid[p] < PNG_THRESHOLD ? 1 : 0;
+    // Horizontal edges (grid point p to p + 1) get crossing ids 0..nh-1,
+    // then vertical edges (p to p + W); hid / vid map an edge to its id.
+    const hid = new Int32Array(H * (W - 1)).fill(-1);
+    const vid = new Int32Array((H - 1) * W).fill(-1);
+    const xs = [], ys = [], rows = [];
+    for (let i = 0; i < H; i++) {
+      for (let j = 0; j < W - 1; j++) {
+        const p = i * W + j;
+        if (dark[p] !== dark[p + 1]) {
+          hid[i * (W - 1) + j] = xs.length;
+          xs.push(j + (PNG_THRESHOLD - grid[p]) / (grid[p + 1] - grid[p]));
+          ys.push(i);
+          rows.push(i);
+        }
+      }
+    }
+    for (let i = 0; i < H - 1; i++) {
+      for (let j = 0; j < W; j++) {
+        const p = i * W + j;
+        if (dark[p] !== dark[p + W]) {
+          vid[p] = xs.length;
+          xs.push(j);
+          ys.push(i + (PNG_THRESHOLD - grid[p]) / (grid[p + W] - grid[p]));
+        }
+      }
+    }
+
+    // The crossing a contour leaves cell (i, j) by (grid point (i, j) is its
+    // top-left), having entered it from `side`: its one exit, unless it's a
+    // saddle (two dark corners diagonally).
+    function cellExit(i, j, side) {
+      const p = i * W + j;
+      const tl = dark[p], tr = dark[p + 1], br = dark[p + W + 1], bl = dark[p + W];
+      const top = hid[i * (W - 1) + j], bottom = hid[(i + 1) * (W - 1) + j];
+      const left = vid[p], right = vid[p + 1];
+      const centerDark = () => (grid[p] + grid[p + 1] + grid[p + W + 1] + grid[p + W]) / 4 < PNG_THRESHOLD;
+      if (tl && br && !tr && !bl) return (side === RIGHT) === centerDark() ? top : bottom; // entered left/right
+      if (tr && bl && !tl && !br) return (side === TOP) === centerDark() ? left : right; // entered top/bottom
+      if (tl && !tr) return top;
+      if (!bl && br) return bottom;
+      if (!tl && bl) return left;
+      return right;
+    }
+
+    // Each crossing leads into the cell on its dark-left side: up (dark on
+    // the left) or down across a horizontal edge, right (dark on top) or left
+    // across a vertical one.
+    const succ = new Int32Array(xs.length);
+    for (let i = 0; i < H; i++) {
+      for (let j = 0; j < W - 1; j++) {
+        const c = hid[i * (W - 1) + j];
+        if (c >= 0) succ[c] = dark[i * W + j] ? cellExit(i - 1, j, BOTTOM) : cellExit(i, j, TOP);
+      }
+    }
+    for (let i = 0; i < H - 1; i++) {
+      for (let j = 0; j < W; j++) {
+        const c = vid[i * W + j];
+        if (c >= 0) succ[c] = dark[i * W + j] ? cellExit(i, j, LEFT) : cellExit(i, j - 1, RIGHT);
+      }
+    }
+
+    const cid = new Int32Array(xs.length).fill(-1);
+    const contours = [];
+    for (let start = 0; start < xs.length; start++) {
+      if (cid[start] >= 0) continue;
+      const loop = [];
+      for (let c = start; cid[c] < 0; c = succ[c]) {
+        cid[c] = contours.length;
+        loop.push(c);
+      }
+      contours.push(loop);
+    }
+    return { xs, ys, rows, contours, cid };
+  }
+
+  // The contour directly enclosing each contour (-1 for none), from one pass
+  // along each pixel row: contours never cross, so their crossings along a
+  // row nest like brackets. A parent is always numbered before its child.
+  function contourParents(rows, cid, count) {
+    const parent = new Array(count).fill(null);
+    let stack = [], row = -1;
+    for (let c = 0; c < rows.length; c++) {
+      if (rows[c] !== row) {
+        stack = [];
+        row = rows[c];
+      }
+      const k = cid[c];
+      if (stack.length && stack[stack.length - 1] === k) {
+        stack.pop();
+      } else {
+        if (parent[k] === null) parent[k] = stack.length ? stack[stack.length - 1] : -1;
+        stack.push(k);
+      }
+    }
+    return parent;
+  }
+
+  // Douglas-Peucker on a closed loop: the sorted positions kept, always
+  // including 0 and the point farthest from it.
+  function simplifyLoop(xs, ys) {
+    const n = xs.length;
+    let far = 0, farD = -1;
+    for (let i = 0; i < n; i++) {
+      const dx = xs[i] - xs[0], dy = ys[i] - ys[0];
+      const d = dx * dx + dy * dy;
+      if (d > farD) {
+        farD = d;
+        far = i;
+      }
+    }
+    if (far === 0) return [0];
+    const keep = [0, far];
+    const tol2 = PNG_TOLERANCE_PX * PNG_TOLERANCE_PX;
+    const stack = [[0, far], [far, n]];
+    while (stack.length) {
+      const [a, b] = stack.pop();
+      if (b - a < 2) continue;
+      const ax = xs[a], ay = ys[a], ex = xs[b % n] - ax, ey = ys[b % n] - ay;
+      const len2 = ex * ex + ey * ey;
+      let m = -1, md = -1;
+      for (let i = a + 1; i < b; i++) {
+        let qx = ax, qy = ay;
+        if (len2 > 0) {
+          const t = Math.min(1, Math.max(0, ((xs[i] - ax) * ex + (ys[i] - ay) * ey) / len2));
+          qx = ax + t * ex;
+          qy = ay + t * ey;
+        }
+        const d = (xs[i] - qx) * (xs[i] - qx) + (ys[i] - qy) * (ys[i] - qy);
+        if (d > md) {
+          md = d;
+          m = i;
+        }
+      }
+      if (md > tol2) {
+        keep.push(m);
+        stack.push([a, m], [m, b]);
+      }
+    }
+    return keep.sort((p, q) => p - q);
+  }
+
+  // The PNG's dark areas as artwork, in mm: { rings, outlines, ringCount,
+  // skipped }. Each dark area is one ring (its outline with the light areas
+  // inside it bridged in as holes) and one outline without the holes (for
+  // keep-out zones); a dark area inside one of those holes is a shape of its
+  // own. Specks are dropped, along with anything inside them.
+  function pngShapes(grid, W, H, mmx, mmy) {
+    const { xs, ys, rows, contours, cid } = traceContours(grid, W, H);
+    const parent = contourParents(rows, cid, contours.length);
+    // Crossings interpolated along rows and along columns err slightly
+    // differently, so a traced edge zigzags by about 0.1 px from one crossing
+    // to the next. One (1, 2, 1) / 4 pass along each contour cancels that.
+    const sx = xs.slice(), sy = ys.slice();
+    for (const loop of contours) {
+      const m = loop.length;
+      for (let i = 0; i < m; i++) {
+        const a = loop[(i + m - 1) % m], c = loop[i], b = loop[(i + 1) % m];
+        sx[c] = (xs[a] + 2 * xs[c] + xs[b]) / 4;
+        sy[c] = (ys[a] + 2 * ys[c] + ys[b]) / 4;
+      }
+    }
+    // Nesting depth: even = a dark area's outline, odd = a hole in its parent.
+    const depth = [], dropped = [], kept = [];
+    let skipped = 0;
+    contours.forEach((loop, k) => {
+      const up = parent[k];
+      depth.push(up >= 0 ? depth[up] + 1 : 0);
+      if (up >= 0 && dropped[up]) {
+        dropped.push(true);
+        kept.push(null);
+        return;
+      }
+      const keep = simplifyLoop(loop.map((c) => sx[c]), loop.map((c) => sy[c]));
+      let area = 0, minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      loop.forEach((c, i) => {
+        const d = loop[(i + 1) % loop.length];
+        area += xs[c] * ys[d] - xs[d] * ys[c];
+        minX = Math.min(minX, xs[c]);
+        maxX = Math.max(maxX, xs[c]);
+        minY = Math.min(minY, ys[c]);
+        maxY = Math.max(maxY, ys[c]);
+      });
+      const tiny = Math.abs(area / 2) < PNG_MIN_AREA_PX || keep.length < 3 ||
+        ((maxX - minX) * mmx < MIN_DIM_MM && (maxY - minY) * mmy < MIN_DIM_MM);
+      dropped.push(tiny);
+      kept.push(keep);
+      if (tiny && depth[k] % 2 === 0) skipped++;
+    });
+
+    // Each hole is bridged along its top pixel row, from its leftmost crossing
+    // there to the nearest kept crossing on its left. That crossing is on the
+    // dark area's outline or on another of its holes, so the bridge runs over
+    // dark only and crosses nothing, and following holes bridged to holes
+    // always ends at the outline (each bridges to one found before it).
+    const attach = new Map(), bridge = new Map(); // crossing -> hole bridged to it, and back
+    let last = -1, row = -1;
+    for (let c = 0; c < rows.length; c++) {
+      if (rows[c] !== row) {
+        last = -1;
+        row = rows[c];
+      }
+      const k = cid[c];
+      if (dropped[k]) continue;
+      if (depth[k] % 2 && contours[k][0] === c) {
+        attach.set(last, k);
+        bridge.set(k, last);
+      }
+      last = c;
+    }
+
+    // Simplified contours as crossing ids, keeping every bridge end.
+    const pos = new Int32Array(xs.length);
+    for (const loop of contours) loop.forEach((c, i) => { pos[c] = i; });
+    const ends = new Map();
+    for (const c of attach.keys()) {
+      if (!ends.has(cid[c])) ends.set(cid[c], []);
+      ends.get(cid[c]).push(pos[c]);
+    }
+    const verts = new Map();
+    contours.forEach((loop, k) => {
+      if (dropped[k]) return;
+      const idx = Array.from(new Set(kept[k].concat(ends.get(k) || []))).sort((a, b) => a - b);
+      verts.set(k, idx.map((i) => loop[i]));
+    });
+
+    const toMm = (ids) => dedupePts(ids.map((c) => [roundMm((sx[c] - 0.5) * mmx), roundMm((sy[c] - 0.5) * mmy)]));
+    const rings = [], outlines = [];
+    let ringCount = 0;
+    for (const [k, v] of verts) {
+      if (depth[k] % 2) continue;
+      // Walk the outline, detouring round each hole bridged from a point on
+      // the way: bridge in, round the hole back to its start, bridge out —
+      // the same zero-width keyhole as makeRingPolygon.
+      const ring = [], stack = [[k, 0]];
+      while (stack.length) {
+        const [j, i] = stack.pop();
+        const vj = verts.get(j);
+        if (i === vj.length) {
+          if (j !== k) ring.push(vj[0], bridge.get(j));
+          continue;
+        }
+        ring.push(vj[i]);
+        stack.push([j, i + 1]);
+        if (attach.has(vj[i])) stack.push([attach.get(vj[i]), 0]);
+      }
+      if (ring.length > v.length) ringCount++;
+      rings.push(toMm(ring));
+      outlines.push(toMm(v));
+    }
+    return { rings, outlines, ringCount, skipped };
+  }
+
+  // A PNG's dark areas as artwork (see pngShapes), in parseSvg's form, with
+  // no board outline. rgba: the decoded pixels (e.g. ImageData.data); dpi:
+  // pngDpi's result, or null to use PNG_DEFAULT_DPI.
+  function parsePng(rgba, width, height, dpi) {
+    const fromFile = !!(dpi && dpi[0] > 0 && dpi[1] > 0);
+    const d = fromFile ? dpi : [PNG_DEFAULT_DPI, PNG_DEFAULT_DPI];
+    const grid = paddedLuminance(rgba, width, height);
+    const shapes = pngShapes(grid, width + 2, height + 2, 25.4 / d[0], 25.4 / d[1]);
+    return {
+      edgeSegs: [],
+      maskSegs: shapes.rings,
+      keepoutSegs: shapes.outlines,
+      layerSegs: {},
+      stats: {
+        edgeCount: 0,
+        maskCount: shapes.rings.length,
+        layerCounts: {},
+        ringCount: shapes.ringCount,
+        skipped: shapes.skipped,
+      },
+      image: { width, height, dpi: d, dpiFromFile: fromFile },
+    };
+  }
+
+  // The box the anchor point and the output size refer to: the board
+  // outline's bounding box, or, with no outline (e.g. a PNG), all artwork's.
+  function referenceBox(edgeSegs, maskSegs, layerSegs) {
+    const artwork = maskSegs.concat(...Object.values(layerSegs || {}).map((p) => p.maskSegs));
+    return combinedBBox(edgeSegs.length ? edgeSegs : artwork);
+  }
+
   // ledWindow: null/undefined (off), 'front', 'back', 'both', 'touch' or 'covered'. When set,
   // it overrides artworkLayer and adds one keep-out zone per keepoutSegs entry.
   // anchor: null/undefined/'none' (off) or one of ANCHOR_POINTS's keys — see
@@ -718,8 +1062,7 @@ window.Converter = (function () {
     keepoutSegs = keepoutSegs || [];
     let parts = Object.values(layerSegs || {});
     if (anchor && anchor !== 'none') {
-      const artwork = maskSegs.concat(...parts.map((p) => p.maskSegs));
-      const box = combinedBBox(edgeSegs.length ? edgeSegs : artwork);
+      const box = referenceBox(edgeSegs, maskSegs, layerSegs);
       if (box) {
         const [ax, ay] = anchorXY(box, anchor);
         const shift = (segs) => segs.map((pts) => shiftPts(pts, -ax, -ay));
@@ -756,5 +1099,5 @@ window.Converter = (function () {
     return chunks.join('\n');
   }
 
-  return { parseSvg, renderKicadText };
+  return { parseSvg, isPng, pngDpi, parsePng, referenceBox, renderKicadText };
 })();

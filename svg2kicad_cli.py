@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
 """
-svg2kicad_cli.py — Convert SVG artwork to KiCad PCB format
+svg2kicad_cli.py — Convert SVG (or PNG) artwork to KiCad PCB format
 
 Usage:
-    python svg2kicad_cli.py input.svg [output.kicad_pcb] [--scale FACTOR]
+    python svg2kicad_cli.py input.svg|input.png [output.kicad_pcb]
+                            [--scale FACTOR | --width MM | --height MM]
                             [--led-window front|back|both|touch|covered]
                             [--anchor POSITION]
 
     --scale FACTOR   Uniformly scale all output coordinates. Defaults to
                       1.0 (1:1, no scaling).
+    --width MM       Scale the output so it comes out MM wide (--height: MM
+    --height MM       tall), keeping its proportions. This is the board
+                      outline's size, or, with no outline (e.g. a PNG), the
+                      artwork's: the same box --anchor uses. Use only one of
+                      --scale, --width and --height.
     --led-window M   LED window: write each artwork shape on F.Mask (front),
                       B.Mask (back) or both, plus a copper keep-out zone
                       (F.Cu + B.Cu) with the same outline so an LED can shine
@@ -45,13 +51,21 @@ elements to paths automatically, so they're handled the same way as <path>.
 Compound paths (letter counters: O, B, P, D…) are bridged into ring polygons
 so holes render correctly in KiCad instead of as solid disks.
 
+PNG input: the dark areas (darker than 50% gray; transparent counts as
+white) become artwork on F.Mask or the --led-window mode, and the light
+areas inside them stay holes. A PNG makes no board outline. Its size comes
+from the PNG's DPI (72 if it has none, so 1 px = 1 pt as in SVG); use
+--width or --height to set it.
+
 Install deps:
     pip install svgpathtools
+    pip install pillow        (only for PNG input)
 """
 
 import uuid, re, sys, os, io, math, xml.etree.ElementTree as ET
 from pathlib import Path
 from xml.dom import minidom
+import numpy as np
 from svgpathtools import svg2paths2, parse_path, Path as SvgPath
 
 SCALE = 25.4 / 72   # SVG points → mm
@@ -376,6 +390,289 @@ def tag_shape_roles(svg_path):
     return io.StringIO(doc.toxml())
 
 
+# PNG input: every dark area becomes one artwork shape, with the light areas
+# inside it bridged in as holes. Outlines are traced with marching squares
+# over the pixel centers, interpolating the anti-aliased gray levels for
+# sub-pixel accuracy. converter.js does the same, step for step.
+PNG_SIGNATURE = b'\x89PNG\r\n\x1a\n'
+PNG_THRESHOLD = 127.5     # luminance 0-255: darker is artwork
+PNG_DEFAULT_DPI = 72      # a PNG with no DPI: 1 px = 1 pt, the same unit as SVG
+PNG_MIN_AREA_PX = 2       # dark or light specks under this many px² are noise
+PNG_TOLERANCE_PX = 0.25   # traced outlines are simplified to within this
+TOP, RIGHT, BOTTOM, LEFT = range(4)
+
+
+def is_png(path):
+    with open(path, 'rb') as f:
+        return f.read(8) == PNG_SIGNATURE
+
+
+def png_luminance(png_path):
+    """The PNG's luminance (0-255, a numpy array with one row per pixel row,
+    transparency composited over white) and its (x, y) DPI, or None if the
+    file doesn't give one."""
+    try:
+        from PIL import Image
+    except ImportError:
+        print("Error: PNG input needs Pillow: pip install pillow")
+        sys.exit(1)
+    img = Image.open(png_path)
+    dpi = img.info.get('dpi')
+    if img.mode.startswith('I'):   # 16-bit grayscale
+        lum = np.asarray(img, dtype=np.float64) / 257
+    else:
+        rgba = np.asarray(img.convert('RGBA'))
+        lum = rgba[..., 0] * 299.0   # (r*299 + g*587 + b*114) / 1000, in place
+        lum += rgba[..., 1] * 587.0
+        lum += rgba[..., 2] * 114.0
+        lum /= 1000
+        alpha = rgba[..., 3]
+        see_through = alpha < 255
+        if see_through.any():
+            a = alpha[see_through].astype(np.float64)
+            lum[see_through] = 255 - (255 - lum[see_through]) * a / 255
+    return lum, dpi
+
+
+def trace_contours(lum):
+    """Marching squares on the image with a 1 px white border added, so
+    every contour closes. Returns the crossing points (xs, ys, in px of that
+    padded grid, where grid point (x, y) is the center of image pixel
+    (x - 1, y - 1)), the pixel row of each crossing on a horizontal edge
+    (those come first, in row-major order), the contours as lists of
+    crossing ids and the contour of each crossing. Contours keep the dark
+    side on their left and start at their topmost-leftmost crossing. A saddle
+    cell joins its two dark corners when the mean of its corners is dark."""
+    h, w = lum.shape
+    grid = np.full((h + 2, w + 2), 255.0)
+    grid[1:-1, 1:-1] = lum
+    dark = grid < PNG_THRESHOLD
+    # Horizontal edges (grid[i, j] to grid[i, j + 1]) get crossing ids
+    # 0..nh-1, then vertical edges (grid[i, j] to grid[i + 1, j]).
+    hi, hj = np.nonzero(dark[:, :-1] != dark[:, 1:])
+    vi, vj = np.nonzero(dark[:-1, :] != dark[1:, :])
+    nh, n = len(hi), len(hi) + len(vi)
+    hid = np.full((h + 2, w + 1), -1, np.int32)
+    vid = np.full((h + 1, w + 2), -1, np.int32)
+    hid[hi, hj] = np.arange(nh)
+    vid[vi, vj] = np.arange(nh, n)
+    a, b = grid[hi, hj], grid[hi, hj + 1]
+    xs = np.concatenate([hj + (PNG_THRESHOLD - a) / (b - a), vj])
+    a, b = grid[vi, vj], grid[vi + 1, vj]
+    ys = np.concatenate([hi, vi + (PNG_THRESHOLD - a) / (b - a)])
+
+    # Each crossing leads into the cell on its dark-left side: up (dark on
+    # the left) or down across a horizontal edge, right (dark on top) or
+    # left across a vertical one. Cell (i, j) has grid[i, j] top-left.
+    up, rightward = dark[hi, hj], dark[vi, vj]
+    ci = np.concatenate([hi - up, vi])
+    cj = np.concatenate([hj, vj - ~rightward])
+    side = np.concatenate([np.where(up, BOTTOM, TOP), np.where(rightward, LEFT, RIGHT)])
+    # That cell's corners and edge crossings, for each crossing.
+    tl, tr, br, bl = dark[ci, cj], dark[ci, cj + 1], dark[ci + 1, cj + 1], dark[ci + 1, cj]
+    top, bottom, left, right = hid[ci, cj], hid[ci + 1, cj], vid[ci, cj], vid[ci, cj + 1]
+    center_dark = (grid[ci, cj] + grid[ci, cj + 1] + grid[ci + 1, cj + 1]
+                   + grid[ci + 1, cj]) / 4 < PNG_THRESHOLD
+    # The cell's one exit, unless it's a saddle (two dark corners diagonally).
+    succ = np.where(tl & ~tr, top, np.where(~bl & br, bottom, np.where(~tl & bl, left, right)))
+    saddle_a = tl & br & ~tr & ~bl    # entered left/right, exits top/bottom
+    saddle_b = tr & bl & ~tl & ~br    # entered top/bottom, exits left/right
+    succ = np.where(saddle_a, np.where((side == RIGHT) == center_dark, top, bottom), succ)
+    succ = np.where(saddle_b, np.where((side == TOP) == center_dark, left, right), succ)
+
+    succ = succ.tolist()
+    cid = [-1] * n
+    contours = []
+    for start in range(n):
+        if cid[start] < 0:
+            loop, c = [], start
+            while cid[c] < 0:
+                cid[c] = len(contours)
+                loop.append(c)
+                c = succ[c]
+            contours.append(loop)
+    return xs.tolist(), ys.tolist(), hi.tolist(), contours, cid
+
+
+def contour_parents(rows, cid, count):
+    """The contour directly enclosing each contour (-1 for none), from one
+    pass along each pixel row: contours never cross, so their crossings along
+    a row nest like brackets. A parent is always numbered before its child."""
+    parent = [None] * count
+    stack, row = [], -1
+    for c, r in enumerate(rows):
+        if r != row:
+            stack, row = [], r
+        k = cid[c]
+        if stack and stack[-1] == k:
+            stack.pop()
+        else:
+            if parent[k] is None:
+                parent[k] = stack[-1] if stack else -1
+            stack.append(k)
+    return parent
+
+
+def simplify_loop(xs, ys):
+    """Douglas-Peucker on a closed loop (numpy arrays): the sorted positions
+    kept, always including 0 and the point farthest from it."""
+    n = len(xs)
+    dx, dy = xs - xs[0], ys - ys[0]
+    far = int(np.argmax(dx * dx + dy * dy))
+    if far == 0:
+        return [0]
+    keep = [0, far]
+    tol2 = PNG_TOLERANCE_PX * PNG_TOLERANCE_PX
+    stack = [(0, far), (far, n)]
+    while stack:
+        a, b = stack.pop()
+        if b - a < 2:
+            continue
+        ax, ay, bx, by = xs[a], ys[a], xs[b % n], ys[b % n]
+        px, py = xs[a + 1:b], ys[a + 1:b]
+        ex, ey = bx - ax, by - ay
+        len2 = ex * ex + ey * ey
+        if len2 > 0:
+            t = np.clip(((px - ax) * ex + (py - ay) * ey) / len2, 0, 1)
+            qx, qy = ax + t * ex, ay + t * ey
+        else:
+            qx, qy = ax, ay
+        d2 = (px - qx) * (px - qx) + (py - qy) * (py - qy)
+        m = int(np.argmax(d2))
+        if d2[m] > tol2:
+            m += a + 1
+            keep.append(m)
+            stack += [(a, m), (m, b)]
+    return sorted(keep)
+
+
+def dedupe_pts(pts):
+    out = pts[:1]
+    for p in pts[1:]:
+        if p != out[-1]:
+            out.append(p)
+    return out
+
+
+def png_shapes(lum, mm_per_px):
+    """The PNG's dark areas as artwork, in mm: (rings, outlines, ring_count,
+    skipped). Each dark area is one ring (its outline with the light areas
+    inside it bridged in as holes) and one outline without the holes (for
+    keep-out zones); a dark area inside one of those holes is a shape of its
+    own. Specks are dropped, along with anything inside them."""
+    xs, ys, rows, contours, cid = trace_contours(lum)
+    parent = contour_parents(rows, cid, len(contours))
+    mmx, mmy = mm_per_px
+    X, Y = np.array(xs), np.array(ys)
+    # Crossings interpolated along rows and along columns err slightly
+    # differently, so a traced edge zigzags by about 0.1 px from one crossing
+    # to the next. One (1, 2, 1) / 4 pass along each contour cancels that.
+    SX, SY = X.copy(), Y.copy()
+    for loop in contours:
+        lx, ly = X[loop], Y[loop]
+        SX[loop] = (np.roll(lx, 1) + 2 * lx + np.roll(lx, -1)) / 4
+        SY[loop] = (np.roll(ly, 1) + 2 * ly + np.roll(ly, -1)) / 4
+    # Nesting depth: even = a dark area's outline, odd = a hole in its parent.
+    depth, dropped, kept = [], [], []
+    skipped = 0
+    for k, loop in enumerate(contours):
+        up = parent[k]
+        depth.append(depth[up] + 1 if up >= 0 else 0)
+        if up >= 0 and dropped[up]:
+            dropped.append(True)
+            kept.append(None)
+            continue
+        lx, ly = X[loop], Y[loop]
+        keep = simplify_loop(SX[loop], SY[loop])
+        area = 0.5 * float(np.sum(lx * np.roll(ly, -1) - np.roll(lx, -1) * ly))
+        tiny = (abs(area) < PNG_MIN_AREA_PX or len(keep) < 3
+                or ((lx.max() - lx.min()) * mmx < MIN_DIM_MM
+                    and (ly.max() - ly.min()) * mmy < MIN_DIM_MM))
+        dropped.append(tiny)
+        kept.append(keep)
+        if tiny and depth[k] % 2 == 0:
+            skipped += 1
+
+    # Each hole is bridged along its top pixel row, from its leftmost crossing
+    # there to the nearest kept crossing on its left. That crossing is on the
+    # dark area's outline or on another of its holes, so the bridge runs over
+    # dark only and crosses nothing, and following holes bridged to holes
+    # always ends at the outline (each bridges to one found before it).
+    attach, bridge = {}, {}   # crossing -> hole bridged to it, and back
+    last, row = -1, -1
+    for c, r in enumerate(rows):
+        if r != row:
+            last, row = -1, r
+        k = cid[c]
+        if dropped[k]:
+            continue
+        if depth[k] % 2 and contours[k][0] == c:
+            attach[last], bridge[k] = k, last
+        last = c
+
+    # Simplified contours as crossing ids, keeping every bridge end.
+    pos = [0] * len(cid)
+    for loop in contours:
+        for i, c in enumerate(loop):
+            pos[c] = i
+    ends = {}
+    for c in attach:
+        ends.setdefault(cid[c], []).append(pos[c])
+    verts = {}
+    for k, loop in enumerate(contours):
+        if not dropped[k]:
+            verts[k] = [loop[i] for i in sorted(set(kept[k]).union(ends.get(k, ())))]
+
+    sx, sy = SX.tolist(), SY.tolist()
+
+    def to_mm(ids):
+        return dedupe_pts([(round((sx[c] - 0.5) * mmx, 4), round((sy[c] - 0.5) * mmy, 4))
+                           for c in ids])
+
+    rings, outlines = [], []
+    ring_count = 0
+    for k, v in verts.items():
+        if depth[k] % 2:
+            continue
+        # Walk the outline, detouring round each hole bridged from a point on
+        # the way: bridge in, round the hole back to its start, bridge out —
+        # the same zero-width keyhole as make_ring_polygon.
+        ring, stack = [], [(k, 0)]
+        while stack:
+            j, i = stack.pop()
+            if i == len(verts[j]):
+                if j != k:
+                    ring += [verts[j][0], bridge[j]]
+                continue
+            c = verts[j][i]
+            ring.append(c)
+            stack.append((j, i + 1))
+            if c in attach:
+                stack.append((attach[c], 0))
+        if len(ring) > len(v):
+            ring_count += 1
+        rings.append(to_mm(ring))
+        outlines.append(to_mm(v))
+    return rings, outlines, ring_count, skipped
+
+
+def parse_png(png_path):
+    """A PNG's dark areas as artwork (see png_shapes), in parse_svg's form,
+    with no board outline. Prints the image's size and DPI."""
+    lum, dpi = png_luminance(png_path)
+    h, w = lum.shape
+    if dpi and dpi[0] > 0 and dpi[1] > 0:
+        note = (f"{dpi[0]:.0f} DPI" if round(dpi[0]) == round(dpi[1])
+                else f"{dpi[0]:.0f} x {dpi[1]:.0f} DPI")
+    else:
+        dpi = (PNG_DEFAULT_DPI, PNG_DEFAULT_DPI)
+        note = f"no DPI in the file, using {PNG_DEFAULT_DPI}"
+    print(f"Image      : {w} x {h} px, {note}")
+    rings, outlines, ring_count, skipped = png_shapes(lum, (25.4 / dpi[0], 25.4 / dpi[1]))
+    layer_segs = {name: {'mask': [], 'keepout': []} for name in LAYER_MODES}
+    return [], rings, outlines, layer_segs, ring_count, skipped
+
+
 def led_window_zone_layers(masks):
     """Keep-out always covers both copper layers (light passes through the
     whole board); the chosen mask layers are listed too, as KiCad does."""
@@ -462,7 +759,9 @@ HEADER = '''(kicad_pcb
 '''
 
 
-def convert(svg_path, out_path, scale=1.0, led_window=None, anchor=None):
+def parse_svg(svg_path):
+    """The SVG's shapes: (edge_segs, mask_segs, keepout_segs, layer_segs,
+    ring_count, skipped)."""
     paths, attrs, _ = svg2paths2(tag_shape_roles(svg_path))
 
     # Pre-parse raw d attributes for reliable compound-path detection (handles ZM with no space)
@@ -545,22 +844,36 @@ def convert(svg_path, out_path, scale=1.0, led_window=None, anchor=None):
                     out_mask.append(ring_pts)
                     ring_count += 1
 
-    # Anchor: computed at the original SVG size, before scaling, from the
-    # outline's bounding box (or, with no outline, all artwork's), so the
+    return edge_segs, mask_segs, keepout_segs, layer_segs, ring_count, skipped
+
+
+def convert(in_path, out_path, scale=1.0, led_window=None, anchor=None, size=None):
+    """size: None, or ('width' | 'height', mm) — sets the scale instead."""
+    parse = parse_png if is_png(in_path) else parse_svg
+    edge_segs, mask_segs, keepout_segs, layer_segs, ring_count, skipped = parse(in_path)
+
+    # The box --anchor and --width/--height refer to: the outline's bounding
+    # box (or, with no outline, all artwork's), at the original size.
+    artwork = mask_segs + [pts for part in layer_segs.values() for pts in part['mask']]
+    box = bbox_of(edge_segs) or bbox_of(artwork)
+    if size and box:
+        side, mm = size
+        extent = box[2] - box[0] if side == 'width' else box[3] - box[1]
+        if extent > 0:
+            scale = mm / extent
+
+    # Anchor: computed at the original SVG size, before scaling, so the
     # chosen point lands exactly at (0, 0) after scaling regardless of scale.
     anchor_shift = None
-    if anchor and anchor != 'none':
-        artwork = mask_segs + [pts for part in layer_segs.values() for pts in part['mask']]
-        box = bbox_of(edge_segs) or bbox_of(artwork)
-        if box:
-            ax, ay = anchor_xy(box, anchor)
-            anchor_shift = (ax, ay)
-            edge_segs = [shift_pts(pts, -ax, -ay) for pts in edge_segs]
-            mask_segs = [shift_pts(pts, -ax, -ay) for pts in mask_segs]
-            keepout_segs = [shift_pts(pts, -ax, -ay) for pts in keepout_segs]
-            for part in layer_segs.values():
-                part['mask'] = [shift_pts(pts, -ax, -ay) for pts in part['mask']]
-                part['keepout'] = [shift_pts(pts, -ax, -ay) for pts in part['keepout']]
+    if anchor and anchor != 'none' and box:
+        ax, ay = anchor_xy(box, anchor)
+        anchor_shift = (ax, ay)
+        edge_segs = [shift_pts(pts, -ax, -ay) for pts in edge_segs]
+        mask_segs = [shift_pts(pts, -ax, -ay) for pts in mask_segs]
+        keepout_segs = [shift_pts(pts, -ax, -ay) for pts in keepout_segs]
+        for part in layer_segs.values():
+            part['mask'] = [shift_pts(pts, -ax, -ay) for pts in part['mask']]
+            part['keepout'] = [shift_pts(pts, -ax, -ay) for pts in part['keepout']]
 
     chunks = [HEADER]
     for pts in edge_segs:
@@ -592,7 +905,9 @@ def convert(svg_path, out_path, scale=1.0, led_window=None, anchor=None):
             print(f"{name:<11}: {len(part['mask'])}  ({layers} + keep-out)")
     print(f"Ring polys : {ring_count}")
     print(f"Skipped    : {skipped}")
-    print(f"Scale      : {scale}x")
+    print(f"Scale      : {scale:g}x")
+    if box:
+        print(f"Size       : {(box[2] - box[0]) * scale:.2f} x {(box[3] - box[1]) * scale:.2f} mm")
     if led_window:
         print(f"LED window : {' + '.join(masks)} + keep-out ({len(keepout_segs)} zones)")
     if anchor_shift:
@@ -602,14 +917,40 @@ def convert(svg_path, out_path, scale=1.0, led_window=None, anchor=None):
 
 def parse_args(argv):
     """Splits argv into positional args, a --scale/--scale=N option, a
-    --led-window/--led-window=MODE option and a --anchor/--anchor=POS option."""
+    --width/--height (=MM) option, a --led-window/--led-window=MODE option
+    and a --anchor/--anchor=POS option."""
     scale = 1.0
+    scale_given = False
+    size = None
     led_window = None
     anchor = None
     positional = []
     i = 0
     while i < len(argv):
         arg = argv[i]
+        name = arg.split('=', 1)[0]
+        if name in ('--width', '--height'):
+            if '=' in arg:
+                value = arg.split('=', 1)[1]
+                i += 1
+            elif i + 1 < len(argv):
+                value = argv[i + 1]
+                i += 2
+            else:
+                print(f"Error: {name} requires a size in mm")
+                sys.exit(1)
+            try:
+                mm = float(value)
+            except ValueError:
+                mm = 0
+            if not mm > 0:
+                print(f"Error: invalid {name} value: {value} (use a size in mm)")
+                sys.exit(1)
+            if size:
+                print("Error: use --width or --height, not both (the proportions are kept)")
+                sys.exit(1)
+            size = (name[2:], mm)
+            continue
         if arg == '--led-window' or arg.startswith('--led-window='):
             if '=' in arg:
                 mode = arg.split('=', 1)[1]
@@ -658,7 +999,11 @@ def parse_args(argv):
         except ValueError:
             print(f"Error: invalid --scale value: {value}")
             sys.exit(1)
-    return positional, scale, led_window, anchor
+        scale_given = True
+    if scale_given and size:
+        print("Error: --scale and --width/--height both set the size; use one")
+        sys.exit(1)
+    return positional, scale, size, led_window, anchor
 
 
 if __name__ == '__main__':
@@ -666,7 +1011,7 @@ if __name__ == '__main__':
         print(__doc__)
         sys.exit(1)
 
-    positional, scale, led_window, anchor = parse_args(sys.argv[1:])
+    positional, scale, size, led_window, anchor = parse_args(sys.argv[1:])
     if not positional:
         print(__doc__)
         sys.exit(1)
@@ -681,4 +1026,4 @@ if __name__ == '__main__':
     else:
         kicad_out = str(Path(svg_in).with_suffix('.kicad_pcb'))
 
-    convert(svg_in, kicad_out, scale=scale, led_window=led_window, anchor=anchor)
+    convert(svg_in, kicad_out, scale=scale, led_window=led_window, anchor=anchor, size=size)

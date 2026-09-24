@@ -2,7 +2,7 @@
 
 **[Open the web app →](https://synthux-academy.github.io/svg2kicad/)**
 
-Converts an SVG artwork file into a KiCad PCB file (`.kicad_pcb`).
+Converts an SVG artwork file (or a PNG) into a KiCad PCB file (`.kicad_pcb`).
 
 - The **board outline** becomes the **Edge.Cuts** layer — either an object/layer named `EdgeCuts` in Illustrator (exported with Object IDs → Layer Names), or the older `cls-2` CSS class convention
 - **Named layers** let one SVG mix parts: shapes on an Illustrator layer named `TouchCopper` (exposed touch pad), `TouchBlack` (touch pad under solder mask) or `LEDWindow` get those layers plus a copper keep-out, whatever the settings below say — see [Named layers](#named-layers)
@@ -10,6 +10,8 @@ Converts an SVG artwork file into a KiCad PCB file (`.kicad_pcb`).
 - **Letter shapes** with counter-holes (O, B, P, D…) are handled correctly — holes render as holes in KiCad, not solid disks
 - Optional **LED window** mode: each artwork shape is placed on F.Mask, B.Mask or both, plus a copper **keep-out zone** with the same outline, so an LED behind the board can shine through — or as a **touch pad**, exposed (F.Cu + F.Mask + keep-out) or **covered** under solder mask (F.Cu + keep-out)
 - Optional **anchor point**: shift the whole output so a chosen point of the board outline lands at (0, 0), which is where KiCad anchors pasted content — so pasting drops that point under your cursor, for lining up with the rest of a footprint
+- Optional **output size**: give the width or height in mm and the output is scaled to it, keeping its proportions
+- **PNG input**: a PNG's dark areas become artwork on your chosen layer (or LED window / touch pad mode), and the light areas inside them stay holes — see [PNG input](#png-input)
 
 Designed for artwork exported from Adobe Illustrator, but works with any SVG that follows the same conventions.
 
@@ -21,11 +23,11 @@ There are two ways to use it: a **command-line script** (below) and a **drag-and
 
 No install needed — just open [`index.html`](index.html) in a browser (double-click it, or `open index.html`).
 
-1. Drag an SVG onto the **SVG source** panel (or click it to browse). It shows your source artwork, and the **KiCad shapes** panel shows the converted result: outline in yellow, holes rendered as holes, and each part in its own look — `TouchCopper` as copper, `TouchBlack` black with gray diagonal lines, `LEDWindow` light yellow, other artwork teal. The stats list a count for each [named layer](#named-layers) found, with everything else as "Other artwork". A short "How it works" note with the layer names sits under the Copy button.
+1. Drag an SVG (or a [PNG](#png-input)) onto the **Source** panel (or click it to browse). It shows your source artwork, and the **KiCad shapes** panel shows the converted result: outline in yellow, holes rendered as holes, and each part in its own look — `TouchCopper` as copper, `TouchBlack` black with gray diagonal lines, `LEDWindow` light yellow, other artwork teal. The stats list a count for each [named layer](#named-layers) found, with everything else as "Other artwork". A short "How it works" note with the layer names sits under the Copy button.
 2. Pick the KiCad layer the artwork should land on (defaults to F.Mask; click "Show more layers" for the full list). This, and step 3, only apply to artwork that isn't on a named layer.
 3. Optionally tick **LED window / touch pad** and pick F.Mask + keep-out, B.Mask + keep-out, F.Mask + B.Mask + keep-out, Touch pad (F.Cu + F.Mask + keep-out), or Covered touch pad (F.Cu + keep-out) (this replaces the artwork layer — see [LED window](#led-window) below). The KiCad preview then shows that artwork in the same look as the matching named layer: LED windows light yellow, touch pad as copper, covered touch pad black with gray diagonal lines. Keep-out zones aren't drawn separately — each one follows its shape's outer outline (see [LED window](#led-window)).
 4. Optionally pick an **Anchor point** (defaults to Top-center; your choice carries over across SVG uploads until you change it — pick None for the SVG's own coordinate origin). Picking one of the nine board-outline positions shifts every output coordinate so that point lands at (0, 0) — see [Anchor point](#anchor-point) below.
-5. Optionally set a **Scale** factor (defaults to `1`, i.e. 1:1 — no scaling).
+5. Optionally set the **Output size** in mm: type a width or a height and the other follows, keeping the proportions. It measures the board outline, or, with no outline (e.g. a PNG), the artwork — the same box the anchor point uses. Or set a **Scale** factor instead (defaults to `1`, i.e. 1:1 — no scaling); the two stay in step.
 6. Click **Copy to Clipboard**.
 7. In KiCad's PCB Editor, click the canvas and paste (Ctrl/Cmd+V) — the outline and artwork appear on the layers you picked, scaled as specified, with your chosen anchor point under the cursor.
 
@@ -37,11 +39,13 @@ It's a static page (`index.html` / `styles.css` / `converter.js` / `ui.js`) with
 
 - Python 3.8 or later
 - [svgpathtools](https://github.com/mathandy/svgpathtools)
+- [Pillow](https://pypi.org/project/pillow/), only for PNG input
 
-Install the dependency once:
+Install the dependencies once:
 
 ```bash
 pip install svgpathtools
+pip install pillow   # only needed for PNG input
 ```
 
 ---
@@ -64,6 +68,18 @@ To scale the output (defaults to `1`, i.e. 1:1 — no scaling):
 
 ```bash
 python svg2kicad_cli.py input.svg --scale 2
+```
+
+Or to scale it to a size in mm, keeping its proportions — `--width` or `--height`, measured on the board outline (or, with no outline, the artwork); use only one of `--scale`, `--width` and `--height`:
+
+```bash
+python svg2kicad_cli.py input.svg --width 80
+```
+
+A PNG works the same way — see [PNG input](#png-input):
+
+```bash
+python svg2kicad_cli.py drop.png --height 40 --led-window both
 ```
 
 To export LED windows (`front` = F.Mask, `back` = B.Mask, `both` = F.Mask + B.Mask, each plus a copper keep-out) or touch pads (`touch` = F.Cu + F.Mask + keep-out, exposed copper; `covered` = F.Cu + keep-out, copper stays under solder mask):
@@ -136,11 +152,23 @@ KiCad pastes clipboard content anchored at its own coordinate (0, 0) — whateve
 
 Setting an anchor point shifts every output coordinate (outline, artwork, and any LED-window keep-out zones) by the same amount, so a chosen point of the **board outline's** bounding box — or, if there's no Edge.Cuts shape in the file, of all the artwork's combined bounding box — lands exactly at (0, 0) instead. Pick one of the nine points (the four corners, the four edge midpoints, or the center); CLI: `--anchor top-left` / `--anchor center` / etc. (or `--anchor none`, the default, for no shift); web app: the Anchor point dropdown. The shift is computed before scaling, so the anchor point lands at (0, 0) regardless of the Scale factor.
 
+### PNG input
+
+A PNG (web app: drop it on the Source panel; CLI: pass it instead of the SVG) is traced into the same kind of output:
+
+- Every **dark area** (darker than 50% gray; transparent counts as white) becomes one artwork shape, on the Artwork layer or the LED window / touch pad mode you pick — like "other artwork" in an SVG.
+- **Light areas inside a dark area** (white or light gray alike) stay holes, bridged in like letter counters, and a dark area inside such a hole is a shape of its own. In LED window mode the keep-out follows each dark area's outer outline, holes filled.
+- There's **no board outline**: a PNG has no layers, so Edge.Cuts and the [named layers](#named-layers) only come from SVGs. The anchor point and output size use the artwork's bounding box.
+- **Size** comes from the PNG's DPI (Photoshop and Illustrator save it; 72 if the file has none, so 1 px = 1 pt as in SVG). The web app shows the image's pixels and DPI next to its name; set the output size to change it.
+- Specks of a pixel or two are dropped as noise (counted as skipped).
+
+Outlines are traced at sub-pixel accuracy from the anti-aliased edges, and kept within 0.25 px of them. Detail smaller than a pixel can't be recovered, so export at 300 DPI or more: at 72 DPI a pixel is 0.35 mm, and sharp corners come out rounded by about that much. It's meant for clean artwork like an exported PNG; a phone photo of a drawing (uneven light, perspective) needs cleaning up in an image editor first.
+
 ---
 
 ## Notes
 
-- SVG units are assumed to be **points** (1 pt = 1/72 inch), which is the default for Illustrator. Scale factor: `25.4 / 72` points → mm.
-- An optional **output scale factor** (CLI: `--scale`; web app: the Scale field, defaults to `1` / 1:1) is applied uniformly to every output coordinate *after* the points→mm conversion above — it resizes the whole board, it isn't a unit correction.
+- SVG units are assumed to be **points** (1 pt = 1/72 inch), which is the default for Illustrator. Scale factor: `25.4 / 72` points → mm. PNG pixels are converted with the PNG's DPI (`25.4 / DPI` mm per pixel, 72 DPI if the file has none).
+- An optional **output scale factor** (CLI: `--scale`; web app: the Scale field, defaults to `1` / 1:1) is applied uniformly to every output coordinate *after* the points→mm conversion above — it resizes the whole board, it isn't a unit correction. The **output size** (CLI: `--width` / `--height`; web app: the Output size fields) just sets that factor for you.
 - Output targets **KiCad format version 20260206** (KiCad 10). KiCad 8/9 will open it with a version warning but work fine.
 - Shapes smaller than 0.02 mm in both dimensions are skipped as degenerate (this check happens before scaling, at the original SVG size).
