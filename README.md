@@ -110,6 +110,8 @@ SVG shapes — `<path>`, `<polygon>`, `<polyline>`, `<rect>` (including rounded 
 
 **Compound paths** (a single SVG path that contains an outer boundary and one or more inner counter-holes, separated by `Z M` in the path data) are detected automatically. Every hole is joined to the outer contour by a zero-width bridge, producing a single polygon, so KiCad renders all the holes correctly — including letters with more than one counter, like B or 8.
 
+**Export at 3+ decimal places.** Illustrator's SVG export dialog has a Decimal Places setting (1–7); at 1, path coordinates are rounded to steps of 0.1pt (~0.035mm, before any `--scale`), which shows up as visible flats on circles and arcs — most noticeably where two separately-drawn curves are meant to line up, like a round touch pad cut from a circular LED window: each gets rounded independently, so their edges no longer match. Set Decimal Places to 3 or higher when exporting to avoid this.
+
 ### LED window
 
 With LED window on, every artwork shape (except those on a [named layer](#named-layers), which keep their own mode) is written:
