@@ -220,7 +220,7 @@ window.Converter = (function () {
       if (y < minY) minY = y;
       if (y > maxY) maxY = y;
     }
-    return { w: maxX - minX, h: maxY - minY };
+    return { w: maxX - minX, h: maxY - minY, minX, maxX, minY, maxY };
   }
 
   function signedArea(pts) {
@@ -231,6 +231,63 @@ window.Converter = (function () {
       a += pts[i][0] * pts[j][1] - pts[j][0] * pts[i][1];
     }
     return a / 2;
+  }
+
+  function pointInPoly([x, y], pts) {
+    let inside = false;
+    const n = pts.length;
+    for (let i = 0; i < n; i++) {
+      const [ax, ay] = pts[i];
+      const [bx, by] = pts[(i + 1) % n];
+      if ((ay > y) !== (by > y) && x < ax + ((y - ay) * (bx - ax)) / (by - ay)) inside = !inside;
+    }
+    return inside;
+  }
+
+  // Groups a compound path's [area, pts] contours into filled shapes under
+  // SVG's default nonzero rule: [{ outline, holes }]. Each contour's parent is
+  // the smallest larger contour containing it; the winding number inside it is
+  // its own winding (+/-1) plus its parent's. A contour with filled inside and
+  // unfilled outside is an outline, the reverse a hole of the nearest outline
+  // around it, and one that changes nothing (same winding inside a filled
+  // shape) is dropped. Separate shapes in one compound path (a dot grid) and
+  // shapes inside a hole come out as polygons of their own instead of being
+  // bridged together.
+  function nestContours(candidates) {
+    const n = candidates.length;
+    const boxes = candidates.map(([, pts]) => bbox(pts));
+    const bySize = [...Array(n).keys()].sort(
+      (a, b) => Math.abs(candidates[a][0]) - Math.abs(candidates[b][0])
+    );
+    const parent = new Array(n).fill(null);
+    bySize.forEach((i, rank) => {
+      const probe = candidates[i][1][0];
+      for (const j of bySize.slice(rank + 1)) {
+        const b = boxes[j];
+        if (probe[0] >= b.minX && probe[0] <= b.maxX && probe[1] >= b.minY && probe[1] <= b.maxY &&
+            pointInPoly(probe, candidates[j][1])) {
+          parent[i] = j;
+          break;
+        }
+      }
+    });
+    const winding = new Array(n).fill(0);
+    const owner = new Array(n).fill(null);
+    const shapes = new Map();
+    for (const i of bySize.slice().reverse()) { // parents before children
+      const p = parent[i];
+      const outside = p !== null ? winding[p] : 0;
+      winding[i] = outside + (candidates[i][0] > 0 ? 1 : -1);
+      if (winding[i] && !outside) {
+        owner[i] = i;
+        shapes.set(i, { outline: candidates[i][1], holes: [] });
+      } else if (outside && !winding[i]) {
+        shapes.get(owner[p]).holes.push(candidates[i][1]);
+      } else if (winding[i]) {
+        owner[i] = owner[p];
+      }
+    }
+    return [...shapes.values()];
   }
 
   function makeRingPolygon(outerPts, innerPts) {
@@ -255,6 +312,46 @@ window.Converter = (function () {
     // Close each loop back to its start so the bridge is a true zero-width
     // keyhole (same edge out and back) — lets several holes join cleanly.
     return outerRot.concat([outerRot[0]], innerRot, [innerRot[0]]);
+  }
+
+  // Joins inner into ring with a zero-width keyhole along a horizontal ray
+  // from inner's rightmost point to the first edge of ring it hits (split at
+  // the hit point). null if the ray hits nothing.
+  function rayBridge(ring, inner) {
+    let k = 0;
+    for (let i = 1; i < inner.length; i++) if (inner[i][0] > inner[k][0]) k = i;
+    const [mx, my] = inner[k];
+    let bestX = null, bestI = -1;
+    const n = ring.length;
+    for (let i = 0; i < n; i++) {
+      const [ax, ay] = ring[i];
+      const [bx, by] = ring[(i + 1) % n];
+      if ((ay > my) === (by > my)) continue; // half-open, so a vertex on the ray counts once
+      const x = ax + ((my - ay) * (bx - ax)) / (by - ay);
+      if (x > mx && (bestX === null || x < bestX)) {
+        bestX = x;
+        bestI = i;
+      }
+    }
+    if (bestX === null) return null;
+    const hit = [roundMm(bestX), my];
+    const loop = inner.slice(k).concat(inner.slice(0, k), [inner[k]]);
+    return ring.slice(0, bestI + 1).concat([hit], loop, [hit], ring.slice(bestI + 1));
+  }
+
+  // Joins every hole into outer as zero-width keyholes. Taken right to left
+  // by rightmost point, a ray to +x can only hit the outline or holes already
+  // joined, so no bridge crosses a contour —
+  // a nearest-point bridge can cut through an unjoined neighbour once there
+  // are many holes side by side (an engraved stone's 85 strands).
+  function joinRing(outer, inners) {
+    const maxX = (pts) => pts.reduce((m, p) => Math.max(m, p[0]), -Infinity);
+    const sorted = inners.map((pts) => [maxX(pts), pts]).sort((a, b) => b[0] - a[0]);
+    let ring = outer;
+    for (const [, inner] of sorted) {
+      ring = rayBridge(ring, inner) || makeRingPolygon(ring, inner);
+    }
+    return ring;
   }
 
   function scalePts(pts, scale) {
@@ -375,13 +472,47 @@ window.Converter = (function () {
     );
   }
 
-  // Splits on the Z...M boundary between subpaths (handles "ZM" with no space).
+  const NUM_SRC = '[-+]?(?:\\d+\\.?\\d*|\\.\\d+)(?:[eE][-+]?\\d+)?';
+  const REL_MOVE_RE = new RegExp('^m\\s*(' + NUM_SRC + ')[\\s,]*(' + NUM_SRC + ')[\\s,]*');
+
+  // Where an (absolute-start) subpath string leaves the current point, in raw
+  // SVG units: its end, or its start if it was closed with Z.
+  function subpathEnd(d) {
+    const pathEl = getSamplePathEl();
+    try {
+      pathEl.setAttribute('d', d);
+      const pt = pathEl.getPointAtLength(pathEl.getTotalLength());
+      return [pt.x, pt.y];
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // One d string per subpath. A subpath starts at every M/m, closed by Z or
+  // not: Illustrator leaves the strokes of a compound path open
+  // ("...15.512M79.1,..."). Each piece is sampled on its own, where a leading
+  // m would read as absolute, so a relative m that isn't the first is
+  // rewritten as an absolute M from where the previous subpath left the
+  // current point.
   function splitSubpathsRaw(rawD) {
     if (!rawD) return [];
-    return rawD
-      .split(/(?<=[Zz])\s*(?=[Mm])/)
-      .map((s) => s.trim())
-      .filter(Boolean);
+    const out = [];
+    for (let part of rawD.split(/(?=[Mm])/)) {
+      part = part.trim();
+      if (!part) continue;
+      const m = REL_MOVE_RE.exec(part);
+      if (m && out.length) {
+        const end = subpathEnd(out[out.length - 1]);
+        if (end) {
+          const rest = part.slice(m[0].length);
+          // Pairs after an m's first one are implicit relative linetos.
+          const lineto = /^[-+.\d]/.test(rest) ? 'l' : '';
+          part = 'M' + (end[0] + Number(m[1])) + ',' + (end[1] + Number(m[2])) + ' ' + lineto + rest;
+        }
+      }
+      out.push(part);
+    }
+    return out;
   }
 
   const POINTS_NUM_RE = /-?\d*\.?\d+(?:[eE][-+]?\d+)?/g;
@@ -611,28 +742,19 @@ window.Converter = (function () {
           candidates.push([signedArea(pts), pts]);
         }
 
-        if (candidates.length === 0) {
-          skipped++;
-        } else if (candidates.length === 1) {
-          out.maskSegs.push(candidates[0][1]);
-          out.keepoutSegs.push(candidates[0][1]);
-        } else {
-          // Outer = largest |area|; join every other subpath into it
-          // (same-winding islands first, then holes) so letters with
-          // several counters (B, 8, %) keep all their holes.
-          const outer = candidates.reduce((m, c) => (Math.abs(c[0]) > Math.abs(m[0]) ? c : m));
-          const sign = outer[0] >= 0 ? 1 : -1;
-          candidates.sort((a, b) => b[0] * sign - a[0] * sign);
-          // Keep-out = outer + same-winding islands, holes filled.
-          for (const c of candidates) {
-            if (c[0] * sign > 0) out.keepoutSegs.push(c[1]);
+        const shapes = candidates.length ? nestContours(candidates) : [];
+        if (!shapes.length) skipped++;
+        for (const { outline, holes } of shapes) {
+          // Every hole is joined into its outline, so letters with several
+          // counters (B, 8, %) keep all their holes; the keep-out is the
+          // outline with its holes filled.
+          out.keepoutSegs.push(outline);
+          if (holes.length) {
+            out.maskSegs.push(joinRing(outline, holes));
+            ringCount++;
+          } else {
+            out.maskSegs.push(outline);
           }
-          let ringPts = candidates[0][1];
-          for (let i = 1; i < candidates.length; i++) {
-            ringPts = makeRingPolygon(ringPts, candidates[i][1]);
-          }
-          out.maskSegs.push(ringPts);
-          ringCount++;
         }
       }
     }

@@ -73,13 +73,50 @@ SCALE = 25.4 / 72   # SVG points → mm
 MIN_DIM_MM = 0.02
 
 
-def split_subpaths_raw(raw_d):
-    parts = re.split(r'(?<=[Zz])\s*(?=[Mm])', raw_d)
-    result = []
-    for part in parts:
+_NUM_RE = r'[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?'
+_REL_MOVE_RE = re.compile(r'm\s*(' + _NUM_RE + r')[\s,]*(' + _NUM_RE + r')[\s,]*')
+
+
+def subpath_end(part):
+    """Where an (absolute-start) subpath string leaves the current point: its
+    end, or its start if it was closed with Z."""
+    try:
+        sp = parse_path(part)
+        if sp:
+            return sp.end
+    except Exception:
+        pass
+    nums = re.findall(_NUM_RE, part)
+    return complex(float(nums[0]), float(nums[1])) if len(nums) >= 2 else None
+
+
+def split_subpath_strings(raw_d):
+    """One d string per subpath. A subpath starts at every M/m, closed by Z or
+    not: Illustrator leaves the strokes of a compound path open
+    ("...15.512M79.1,..."). Each piece is parsed on its own, where a leading m
+    would read as absolute, so a relative m that isn't the first is rewritten
+    as an absolute M from where the previous subpath left the current point."""
+    out = []
+    for part in re.split(r'(?=[Mm])', raw_d):
         part = part.strip()
         if not part:
             continue
+        m = _REL_MOVE_RE.match(part)
+        if m and out:
+            end = subpath_end(out[-1])
+            if end is not None:
+                rest = part[m.end():]
+                # Pairs after an m's first one are implicit relative linetos.
+                lineto = 'l' if re.match(r'[-+.\d]', rest) else ''
+                part = 'M%r,%r %s%s' % (end.real + float(m.group(1)),
+                                        end.imag + float(m.group(2)), lineto, rest)
+        out.append(part)
+    return out
+
+
+def split_subpaths_raw(raw_d):
+    result = []
+    for part in split_subpath_strings(raw_d):
         try:
             sp = parse_path(part)
             if sp:
@@ -186,15 +223,55 @@ def signed_area(pts):
     return a / 2.0
 
 
-def split_by_winding(candidates):
-    """Orders (area, pts) candidates outer-first (largest |area|, then
-    same-winding islands, then holes) and returns (ordered, islands), where
-    islands are the outer contour plus same-winding islands — i.e. the
-    shape with its holes filled."""
-    sign = 1 if max(candidates, key=lambda x: abs(x[0]))[0] >= 0 else -1
-    ordered = sorted(candidates, key=lambda x: x[0] * sign, reverse=True)
-    islands = [pts for area, pts in ordered if area * sign > 0]
-    return ordered, islands
+def point_in_poly(pt, pts):
+    x, y = pt
+    inside = False
+    n = len(pts)
+    for i in range(n):
+        (ax, ay), (bx, by) = pts[i], pts[(i + 1) % n]
+        if (ay > y) != (by > y) and x < ax + (y - ay) * (bx - ax) / (by - ay):
+            inside = not inside
+    return inside
+
+
+def nest_contours(candidates):
+    """Groups a compound path's (area, pts) contours into filled shapes under
+    SVG's default nonzero rule: [(outline, [holes])]. Each contour's parent is
+    the smallest larger contour containing it; the winding number inside it is
+    its own winding (+/-1) plus its parent's. A contour with filled inside and
+    unfilled outside is an outline, the reverse a hole of the nearest outline
+    around it, and one that changes nothing (same winding inside a filled
+    shape) is dropped. Separate shapes in one compound path (a dot grid) and
+    shapes inside a hole come out as polygons of their own instead of being
+    bridged together."""
+    n = len(candidates)
+    boxes = []
+    for _, pts in candidates:
+        xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
+        boxes.append((min(xs), min(ys), max(xs), max(ys)))
+    by_size = sorted(range(n), key=lambda i: abs(candidates[i][0]))
+    parent = [None] * n
+    for rank, i in enumerate(by_size):
+        probe = candidates[i][1][0]
+        for j in by_size[rank + 1:]:
+            b = boxes[j]
+            if b[0] <= probe[0] <= b[2] and b[1] <= probe[1] <= b[3] \
+                    and point_in_poly(probe, candidates[j][1]):
+                parent[i] = j
+                break
+    winding, owner, shapes = [0] * n, [None] * n, {}
+    for i in reversed(by_size):   # parents before children
+        p = parent[i]
+        outside = winding[p] if p is not None else 0
+        winding[i] = outside + (1 if candidates[i][0] > 0 else -1)
+        if winding[i] and not outside:
+            owner[i] = i
+            shapes[i] = (candidates[i][1], [])
+        elif outside and not winding[i]:
+            shapes[owner[p]][1].append(candidates[i][1])
+        elif winding[i]:
+            owner[i] = owner[p]
+    return list(shapes.values())
 
 
 def scale_pts(pts, scale):
@@ -218,6 +295,40 @@ def make_ring_polygon(outer_pts, inner_pts):
     # Close each loop back to its start so the bridge is a true zero-width
     # keyhole (same edge out and back) — lets several holes join cleanly.
     return outer_rot + [outer_rot[0]] + inner_rot + [inner_rot[0]]
+
+
+def ray_bridge(ring, inner):
+    """Joins inner into ring with a zero-width keyhole along a horizontal ray
+    from inner's rightmost point to the first edge of ring it hits (split at
+    the hit point). None if the ray hits nothing."""
+    k = max(range(len(inner)), key=lambda i: inner[i][0])
+    mx, my = inner[k]
+    best_x, best_i = None, -1
+    n = len(ring)
+    for i in range(n):
+        (ax, ay), (bx, by) = ring[i], ring[(i + 1) % n]
+        if (ay > my) == (by > my):   # half-open, so a vertex on the ray counts once
+            continue
+        x = ax + (my - ay) * (bx - ax) / (by - ay)
+        if x > mx and (best_x is None or x < best_x):
+            best_x, best_i = x, i
+    if best_x is None:
+        return None
+    hit = (round(best_x, 4), my)
+    loop = inner[k:] + inner[:k] + [inner[k]]
+    return ring[:best_i + 1] + [hit] + loop + [hit] + ring[best_i + 1:]
+
+
+def join_ring(outer, inners):
+    """Joins every hole into outer as zero-width keyholes. Taken right to left
+    by rightmost point, a ray to +x can only hit the outline or holes already
+    joined, so no bridge crosses a contour —
+    a nearest-point bridge can cut through an unjoined neighbour once there
+    are many holes side by side (an engraved stone's 85 strands)."""
+    ring = outer
+    for inner in sorted(inners, key=lambda pts: max(p[0] for p in pts), reverse=True):
+        ring = ray_bridge(ring, inner) or make_ring_polygon(ring, inner)
+    return ring
 
 
 ANCHOR_POINTS = {
@@ -834,22 +945,19 @@ def parse_svg(svg_path):
                         continue
                     candidates.append((signed_area(pts), pts))
 
-                if not candidates:
+                shapes = nest_contours(candidates) if candidates else []
+                if not shapes:
                     skipped += 1
-                elif len(candidates) == 1:
-                    out_mask.append(candidates[0][1])
-                    out_keepout.append(candidates[0][1])
-                else:
-                    # Outer = largest |area|; join every other subpath into it
-                    # (same-winding islands first, then holes) so letters with
-                    # several counters (B, 8, %) keep all their holes.
-                    candidates, islands = split_by_winding(candidates)
-                    out_keepout.extend(islands)
-                    ring_pts = candidates[0][1]
-                    for _, pts in candidates[1:]:
-                        ring_pts = make_ring_polygon(ring_pts, pts)
-                    out_mask.append(ring_pts)
-                    ring_count += 1
+                for outline, holes in shapes:
+                    # Every hole is joined into its outline, so letters with
+                    # several counters (B, 8, %) keep all their holes; the
+                    # keep-out is the outline with its holes filled.
+                    out_keepout.append(outline)
+                    if holes:
+                        out_mask.append(join_ring(outline, holes))
+                        ring_count += 1
+                    else:
+                        out_mask.append(outline)
 
     return edge_segs, mask_segs, keepout_segs, layer_segs, ring_count, skipped
 
